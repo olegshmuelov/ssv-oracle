@@ -1,0 +1,64 @@
+# SSV Oracle Configuration Example
+
+# ============================================================================
+# Ethereum & Beacon Chain
+# ============================================================================
+
+# Ethereum Execution Layer RPC endpoint (for SSV contract events)
+eth_rpc: "http://localhost:8545"
+
+# Beacon Chain (Consensus Layer) API endpoint (for effective balances and finalization)
+beacon_rpc: "http://localhost:5052"
+
+# ============================================================================
+# Contracts
+# ============================================================================
+
+# SSV Network contract address
+ssv_contract: "0x..."
+
+# Oracle contract address
+oracle_contract: "0x..."
+
+# ============================================================================
+# Event Syncing Configuration
+# ============================================================================
+
+# Block number when SSV contract was deployed (start syncing from here)
+sync_from_block: 0
+
+# Blocks to process per batch (smaller = faster progress updates)
+sync_batch_size: 200
+
+# Max retry attempts for RPC failures
+sync_max_retries: 3
+
+# ============================================================================
+# Database Configuration
+# ============================================================================
+
+# PostgreSQL connection
+db_host: "localhost"
+db_port: 5432
+db_name: "ssv_oracle"
+db_user: "oracle"
+db_password_env: "DB_PASSWORD"  # Read password from environment variable
+
+# ============================================================================
+# Oracle Behavior
+# ============================================================================
+
+# Private key for signing transactions
+# DO NOT commit your real private key!
+private_key_env: "PRIVATE_KEY"
+
+# ============================================================================
+# Mock Mode (PoC - until oracle contract is ready)
+# ============================================================================
+
+# Enable mock mode (no real contract calls, state stored in database)
+mock_mode: true
+
+# Mock oracle contract configuration
+mock_oracle_start_epoch: 1000     # First epoch where oracle should commit
+mock_oracle_epoch_interval: 1     # Commit every epoch

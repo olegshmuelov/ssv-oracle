@@ -1,0 +1,16 @@
+# Binaries
+ssv-oracle
+
+# IDE
+.idea/
+.vscode/
+
+# Environment files
+.env
+config.yaml
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/
