@@ -68,7 +68,7 @@ ssv_contract: "0x..."
 oracle_contract: "0x..."  # Use 0x0000... for mock mode
 
 # Syncing
-sync_from_block: 0        # SSV contract deployment block
+sync_from_block: 17507487  # SSV contract deployment block (mainnet example)
 sync_batch_size: 200
 sync_max_retries: 3
 
