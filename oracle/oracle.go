@@ -52,9 +52,19 @@ func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconCli
 	log.Printf("Oracle config: startEpoch=%d, epochInterval=%d epochs",
 		o.timingConfig.StartEpoch, o.timingConfig.EpochInterval)
 
-	// Run initial cycle check (important after initial sync or restart)
-	if err := o.cycle(ctx, syncer, beaconClient); err != nil {
-		log.Printf("Initial cycle error: %v", err)
+	// On startup, assume current round is already handled to avoid duplicate commits.
+	// Calculate current round and skip it - we'll commit starting from next round.
+	finalizedEpoch, err := beaconClient.GetFinalizedEpoch(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get finalized epoch: %w", err)
+	}
+
+	if finalizedEpoch >= o.timingConfig.StartEpoch {
+		epochsSinceStart := finalizedEpoch - o.timingConfig.StartEpoch
+		// Ceiling division: determines which round we're in
+		currentRound := (epochsSinceStart + o.timingConfig.EpochInterval - 1) / o.timingConfig.EpochInterval
+		o.lastCommittedRound = currentRound
+		log.Printf("Startup: skipping round %d (will commit from round %d)", currentRound, currentRound+1)
 	}
 
 	for {
@@ -96,13 +106,22 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 
 	config := o.timingConfig
 
+	spec, err := beaconClient.GetSpec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get beacon spec: %w", err)
+	}
+
 	finalizedEpoch, err := beaconClient.GetFinalizedEpoch(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get finalized epoch: %w", err)
 	}
 
+	// Calculate current epoch from wall clock
+	currentSlot := uint64(time.Now().Sub(spec.GenesisTime) / spec.SlotDuration)
+	currentEpoch := currentSlot / spec.SlotsPerEpoch
+
 	if finalizedEpoch < config.StartEpoch {
-		log.Printf("Waiting for start epoch (finalized=%d, start=%d)", finalizedEpoch, config.StartEpoch)
+		log.Printf("Waiting for start epoch (current=%d, finalized=%d, start=%d)", currentEpoch, finalizedEpoch, config.StartEpoch)
 		return nil
 	}
 
@@ -113,8 +132,8 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 	targetEpoch := config.StartEpoch + (currentRound * config.EpochInterval)
 
 	if targetEpoch > finalizedEpoch {
-		log.Printf("Waiting for target epoch %d to be finalized (round %d, finalized %d)",
-			targetEpoch, currentRound, finalizedEpoch)
+		log.Printf("Waiting for target epoch %d to be finalized (round %d, current=%d, finalized=%d)",
+			targetEpoch, currentRound, currentEpoch, finalizedEpoch)
 		return nil
 	}
 
@@ -124,8 +143,8 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 		return nil
 	}
 
-	log.Printf("--- Cycle: round %d, target epoch %d (finalized %d) ---",
-		currentRound, targetEpoch, finalizedEpoch)
+	log.Printf("--- Cycle: round %d, target epoch %d (current=%d, finalized=%d) ---",
+		currentRound, targetEpoch, currentEpoch, finalizedEpoch)
 
 	targetBlock, err := beaconClient.GetLastBlockOfEpoch(ctx, targetEpoch)
 	if err != nil {
@@ -135,11 +154,6 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 	// Sync events up to last block of target epoch for complete cluster membership
 	if err := syncer.SyncToBlock(ctx, targetBlock); err != nil {
 		return fmt.Errorf("failed to sync to block %d: %w", targetBlock, err)
-	}
-
-	spec, err := beaconClient.GetSpec(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get beacon spec: %w", err)
 	}
 
 	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch, spec.SlotsPerEpoch); err != nil {
