@@ -15,7 +15,8 @@ import (
 type Oracle struct {
 	storage            ethsync.Storage
 	contractClient     *contract.Client
-	lastCommittedRound uint64 // Tracks last committed round to prevent duplicates
+	lastCommittedRound uint64                 // Tracks last committed round to prevent duplicates
+	timingConfig       *contract.OracleConfig // Cached timing config from contract
 }
 
 // Config holds the oracle configuration.
@@ -43,17 +44,13 @@ func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconCli
 	log.Printf("Beacon spec: genesis=%s, slotsPerEpoch=%d, slotDuration=%v",
 		spec.GenesisTime.Format(time.RFC3339), spec.SlotsPerEpoch, spec.SlotDuration)
 
-	config, err := o.contractClient.GetTimingConfig(ctx)
-	if err != nil {
+	// Fetch and cache timing config from contract
+	if err := o.loadTimingConfig(ctx); err != nil {
 		return fmt.Errorf("failed to get oracle config: %w", err)
 	}
 
-	if config.EpochInterval == 0 {
-		return fmt.Errorf("invalid epoch interval: 0")
-	}
-
 	log.Printf("Oracle config: startEpoch=%d, epochInterval=%d epochs",
-		config.StartEpoch, config.EpochInterval)
+		o.timingConfig.StartEpoch, o.timingConfig.EpochInterval)
 
 	// Run initial cycle check (important after initial sync or restart)
 	if err := o.cycle(ctx, syncer, beaconClient); err != nil {
@@ -97,10 +94,7 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 		return fmt.Errorf("failed to sync events: %w", err)
 	}
 
-	config, err := o.contractClient.GetTimingConfig(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get oracle config: %w", err)
-	}
+	config := o.timingConfig
 
 	finalizedEpoch, err := beaconClient.GetFinalizedEpoch(ctx)
 	if err != nil {
@@ -183,6 +177,21 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 		return fmt.Errorf("transaction reverted")
 	}
 
+	return nil
+}
+
+// loadTimingConfig fetches timing config from contract and caches it.
+func (o *Oracle) loadTimingConfig(ctx context.Context) error {
+	config, err := o.contractClient.GetTimingConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	if config.EpochInterval == 0 {
+		return fmt.Errorf("invalid epoch interval: 0")
+	}
+
+	o.timingConfig = config
 	return nil
 }
 
