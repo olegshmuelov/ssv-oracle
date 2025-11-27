@@ -107,6 +107,7 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 	}
 
 	epochsSinceStart := finalizedEpoch - config.StartEpoch
+	// Ceiling division: determines which round we're in based on epochs elapsed
 	currentRound := (epochsSinceStart + config.EpochInterval - 1) / config.EpochInterval
 
 	targetEpoch := config.StartEpoch + (currentRound * config.EpochInterval)
