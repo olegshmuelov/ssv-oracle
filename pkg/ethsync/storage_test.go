@@ -369,8 +369,9 @@ func TestPostgresStorage_GetActiveValidatorsWithClusters(t *testing.T) {
 		t.Fatalf("Failed to insert validator event: %v", err)
 	}
 
-	// Get active validators at epoch 1000
-	validators, err := storage.GetActiveValidatorsWithClusters(ctx, addEpoch)
+	// Get active validators at epoch 1000 (using 32 slots per epoch for test)
+	slotsPerEpoch := uint64(32)
+	validators, err := storage.GetActiveValidatorsWithClusters(ctx, addEpoch, slotsPerEpoch)
 	if err != nil {
 		t.Fatalf("Failed to get active validators: %v", err)
 	}
@@ -405,7 +406,7 @@ func TestPostgresStorage_GetActiveValidatorsWithClusters(t *testing.T) {
 	}
 
 	// Get active validators at epoch 1001
-	validators, err = storage.GetActiveValidatorsWithClusters(ctx, removeEpoch)
+	validators, err = storage.GetActiveValidatorsWithClusters(ctx, removeEpoch, slotsPerEpoch)
 	if err != nil {
 		t.Fatalf("Failed to get active validators after removal: %v", err)
 	}

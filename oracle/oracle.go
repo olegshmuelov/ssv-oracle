@@ -11,13 +11,6 @@ import (
 	"ssv-oracle/pkg/ethsync"
 )
 
-const (
-	// SecondsPerSlot is the duration of a beacon chain slot
-	SecondsPerSlot = 12
-	// SlotsPerEpoch is the number of slots in an epoch
-	SlotsPerEpoch = 32
-)
-
 // Oracle coordinates the cluster balance tracking and Merkle root commitments.
 type Oracle struct {
 	storage            ethsync.Storage
@@ -43,11 +36,12 @@ func New(cfg *Config) *Oracle {
 func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconClient *ethsync.BeaconClient) error {
 	log.Println("Oracle starting...")
 
-	genesisTime, err := beaconClient.GetGenesisTime(ctx)
+	spec, err := beaconClient.GetSpec(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get genesis time: %w", err)
+		return fmt.Errorf("failed to get beacon spec: %w", err)
 	}
-	log.Printf("Genesis time: %s", genesisTime.Format(time.RFC3339))
+	log.Printf("Beacon spec: genesis=%s, slotsPerEpoch=%d, slotDuration=%v",
+		spec.GenesisTime.Format(time.RFC3339), spec.SlotsPerEpoch, spec.SlotDuration)
 
 	config, err := o.contractClient.GetTimingConfig(ctx)
 	if err != nil {
@@ -68,12 +62,12 @@ func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconCli
 
 	for {
 		now := time.Now()
-		currentSlot := uint64(now.Sub(genesisTime) / (SecondsPerSlot * time.Second))
-		currentEpoch := currentSlot / SlotsPerEpoch
+		currentSlot := uint64(now.Sub(spec.GenesisTime) / spec.SlotDuration)
+		currentEpoch := currentSlot / spec.SlotsPerEpoch
 		nextEpoch := currentEpoch + 1
 
-		nextEpochSlot := nextEpoch * SlotsPerEpoch
-		nextEpochTime := genesisTime.Add(time.Duration(nextEpochSlot*SecondsPerSlot) * time.Second)
+		nextEpochSlot := nextEpoch * spec.SlotsPerEpoch
+		nextEpochTime := spec.GenesisTime.Add(time.Duration(nextEpochSlot) * spec.SlotDuration)
 		waitDuration := time.Until(nextEpochTime)
 
 		log.Printf("Waiting for epoch %d (in %v)", nextEpoch, waitDuration.Round(time.Second))
@@ -148,11 +142,16 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 		return fmt.Errorf("failed to sync to block %d: %w", targetBlock, err)
 	}
 
-	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch); err != nil {
+	spec, err := beaconClient.GetSpec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get beacon spec: %w", err)
+	}
+
+	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch, spec.SlotsPerEpoch); err != nil {
 		return fmt.Errorf("failed to fetch balances: %w", err)
 	}
 
-	clusterBalances, err := o.storage.GetClusterBalances(ctx, targetEpoch)
+	clusterBalances, err := o.storage.GetClusterBalances(ctx, targetEpoch, spec.SlotsPerEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster balances: %w", err)
 	}
@@ -189,8 +188,8 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 
 // fetchAndStoreBalances fetches effective balances from beacon chain for all active validators
 // at the target epoch. Only stores balances that changed since the previous epoch.
-func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64) error {
-	validators, err := o.storage.GetActiveValidatorsWithClusters(ctx, targetEpoch)
+func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64, slotsPerEpoch uint64) error {
+	validators, err := o.storage.GetActiveValidatorsWithClusters(ctx, targetEpoch, slotsPerEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to get active validators: %w", err)
 	}

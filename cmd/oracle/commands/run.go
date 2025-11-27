@@ -167,13 +167,12 @@ func runOracle(_ *cobra.Command, _ []string) error {
 	})
 
 	// Fetch genesis time to create beacon spec for slot/epoch calculations
-	genesisTime, err := beaconClient.GetGenesisTime(context.Background())
+	spec, err := beaconClient.GetSpec(context.Background())
 	if err != nil {
-		log.Fatalf("Failed to get beacon genesis time: %v", err)
+		log.Fatalf("Failed to get beacon spec: %v", err)
 	}
-	log.Printf("Beacon genesis time: %s", genesisTime.Format(time.RFC3339))
-
-	spec := ethsync.NewSpec(genesisTime)
+	log.Printf("Beacon spec: genesis=%s, slotsPerEpoch=%d, slotDuration=%v",
+		spec.GenesisTime.Format(time.RFC3339), spec.SlotsPerEpoch, spec.SlotDuration)
 
 	// Create event syncer
 	ssvContract := common.HexToAddress(cfg.SSVContract)

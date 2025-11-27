@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_events_cluster ON contract_events(cluster_id);
 -- ============================================================================
 -- Tracks validator membership in clusters: Added or Removed
 -- Key: (cluster_id, validator_pubkey, slot, log_index) for 100% correctness
--- Using slot (not block_number) because: epoch = slot / 32, enabling simple epoch-based queries
+-- Using slot (not block_number) because: epoch = slot / slots_per_epoch, enabling epoch-based queries
 -- log_index is unique within a block, and each slot has at most one block
 
 CREATE TABLE IF NOT EXISTS validator_events (
@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_validator_events_slot ON validator_events(slot);
 -- ============================================================================
 -- Tracks cluster operational status: Liquidated or Reactivated
 -- Key: (cluster_id, slot, log_index) for 100% correctness
--- Using slot (not block_number) because: epoch = slot / 32, enabling simple epoch-based queries
+-- Using slot (not block_number) because: epoch = slot / slots_per_epoch, enabling epoch-based queries
 -- If no record exists for a cluster, it's considered active (never been liquidated)
 
 CREATE TABLE IF NOT EXISTS cluster_events (
@@ -191,17 +191,16 @@ CREATE INDEX IF NOT EXISTS idx_commits_status ON oracle_commits(tx_status);
 --
 -- Parameters:
 --   p_target_epoch: The epoch to evaluate state and get balances for
+--   p_slots_per_epoch: Number of slots per epoch (from beacon spec)
 --
--- Note: Events are queried using slot <= last_slot_of_epoch (p_target_epoch * 32 + 31)
---
-CREATE OR REPLACE FUNCTION get_cluster_effective_balances(p_target_epoch BIGINT)
+CREATE OR REPLACE FUNCTION get_cluster_effective_balances(p_target_epoch BIGINT, p_slots_per_epoch BIGINT)
 RETURNS TABLE (
     cluster_id BYTEA,
     total_effective_balance BIGINT,
     validator_count BIGINT
 ) AS $$
 DECLARE
-    v_last_slot BIGINT := p_target_epoch * 32 + 31;  -- Last slot of target epoch
+    v_last_slot BIGINT := (p_target_epoch + 1) * p_slots_per_epoch - 1;  -- Last slot of target epoch
 BEGIN
     RETURN QUERY
     WITH latest_validator_event AS (
@@ -252,14 +251,15 @@ $$ LANGUAGE plpgsql STABLE;
 --
 -- Parameters:
 --   p_at_epoch: The epoch to evaluate state at
+--   p_slots_per_epoch: Number of slots per epoch (from beacon spec)
 --
-CREATE OR REPLACE FUNCTION get_active_validators_with_clusters(p_at_epoch BIGINT)
+CREATE OR REPLACE FUNCTION get_active_validators_with_clusters(p_at_epoch BIGINT, p_slots_per_epoch BIGINT)
 RETURNS TABLE (
     cluster_id BYTEA,
     validator_pubkey BYTEA
 ) AS $$
 DECLARE
-    v_last_slot BIGINT := p_at_epoch * 32 + 31;  -- Last slot of target epoch
+    v_last_slot BIGINT := (p_at_epoch + 1) * p_slots_per_epoch - 1;  -- Last slot of target epoch
 BEGIN
     RETURN QUERY
     WITH latest_validator_event AS (
@@ -296,11 +296,12 @@ $$ LANGUAGE plpgsql STABLE;
 --
 -- Parameters:
 --   p_target_epoch: The epoch to check readiness for
+--   p_slots_per_epoch: Number of slots per epoch (from beacon spec)
 --
-CREATE OR REPLACE FUNCTION is_ready_to_commit(p_target_epoch BIGINT)
+CREATE OR REPLACE FUNCTION is_ready_to_commit(p_target_epoch BIGINT, p_slots_per_epoch BIGINT)
 RETURNS BOOLEAN AS $$
 DECLARE
-    v_last_slot BIGINT := p_target_epoch * 32 + 31;  -- Last slot of target epoch
+    v_last_slot BIGINT := (p_target_epoch + 1) * p_slots_per_epoch - 1;  -- Last slot of target epoch
 BEGIN
     -- Returns TRUE if there are any active validators (we can compute a merkle tree)
     -- Missing balance records are treated as 0, so no need to check for them
@@ -371,13 +372,13 @@ $$ LANGUAGE plpgsql STABLE;
 --
 -- BALANCE FETCHING:
 --
---   1. Get active validators: SELECT * FROM get_active_validators_with_clusters(target_epoch)
+--   1. Get active validators: SELECT * FROM get_active_validators_with_clusters(target_epoch, slots_per_epoch)
 --   2. Fetch from beacon: POST /eth/v1/beacon/states/finalized/validators
 --   3. For each validator with changed balance:
 --      INSERT INTO validator_balances (cluster_id, validator_pubkey, epoch, effective_balance)
 --
 -- MERKLE ROOT COMPUTATION:
 --
---   1. Check ready: SELECT is_ready_to_commit(target_epoch)
---   2. Get balances: SELECT * FROM get_cluster_effective_balances(target_epoch)
+--   1. Check ready: SELECT is_ready_to_commit(target_epoch, slots_per_epoch)
+--   2. Get balances: SELECT * FROM get_cluster_effective_balances(target_epoch, slots_per_epoch)
 --   3. Build merkle tree from cluster balances

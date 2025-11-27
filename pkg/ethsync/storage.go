@@ -36,11 +36,11 @@ type Storage interface {
 	// Cluster state (current metadata, updated in place)
 	UpsertClusterState(ctx context.Context, cluster *ClusterState) error
 
-	// Queries (epoch-based, slot computed internally: last_slot = epoch * 32 + 31)
-	GetClusterBalances(ctx context.Context, targetEpoch uint64) ([]ClusterBalance, error)
-	GetActiveValidatorsWithClusters(ctx context.Context, atEpoch uint64) ([]ActiveValidator, error)
+	// Queries (epoch-based, slotsPerEpoch from beacon spec)
+	GetClusterBalances(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) ([]ClusterBalance, error)
+	GetActiveValidatorsWithClusters(ctx context.Context, atEpoch uint64, slotsPerEpoch uint64) ([]ActiveValidator, error)
 	GetLatestValidatorBalances(ctx context.Context, validators []ActiveValidator, beforeEpoch uint64) (map[string]uint64, error)
-	IsReadyToCommit(ctx context.Context, targetEpoch uint64) (bool, error)
+	IsReadyToCommit(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) (bool, error)
 
 	// Transaction support
 	BeginTx(ctx context.Context) (Tx, error)
@@ -496,10 +496,10 @@ func (s *PostgresStorage) UpsertClusterState(ctx context.Context, cluster *Clust
 }
 
 // GetClusterBalances returns cluster balances for merkle tree at specific epoch.
-func (s *PostgresStorage) GetClusterBalances(ctx context.Context, targetEpoch uint64) ([]ClusterBalance, error) {
-	query := `SELECT * FROM get_cluster_effective_balances($1)`
+func (s *PostgresStorage) GetClusterBalances(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) ([]ClusterBalance, error) {
+	query := `SELECT * FROM get_cluster_effective_balances($1, $2)`
 
-	rows, err := s.db.QueryContext(ctx, query, targetEpoch)
+	rows, err := s.db.QueryContext(ctx, query, targetEpoch, slotsPerEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cluster balances: %w", err)
 	}
@@ -522,10 +522,10 @@ func (s *PostgresStorage) GetClusterBalances(ctx context.Context, targetEpoch ui
 }
 
 // GetActiveValidatorsWithClusters returns all active validators with their cluster IDs at a specific epoch.
-func (s *PostgresStorage) GetActiveValidatorsWithClusters(ctx context.Context, atEpoch uint64) ([]ActiveValidator, error) {
-	query := `SELECT * FROM get_active_validators_with_clusters($1)`
+func (s *PostgresStorage) GetActiveValidatorsWithClusters(ctx context.Context, atEpoch uint64, slotsPerEpoch uint64) ([]ActiveValidator, error) {
+	query := `SELECT * FROM get_active_validators_with_clusters($1, $2)`
 
-	rows, err := s.db.QueryContext(ctx, query, atEpoch)
+	rows, err := s.db.QueryContext(ctx, query, atEpoch, slotsPerEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active validators with clusters: %w", err)
 	}
@@ -589,11 +589,11 @@ func (s *PostgresStorage) GetLatestValidatorBalances(ctx context.Context, valida
 }
 
 // IsReadyToCommit checks if all active validators have balances fetched for target epoch.
-func (s *PostgresStorage) IsReadyToCommit(ctx context.Context, targetEpoch uint64) (bool, error) {
-	query := `SELECT is_ready_to_commit($1)`
+func (s *PostgresStorage) IsReadyToCommit(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) (bool, error) {
+	query := `SELECT is_ready_to_commit($1, $2)`
 
 	var ready bool
-	err := s.db.QueryRowContext(ctx, query, targetEpoch).Scan(&ready)
+	err := s.db.QueryRowContext(ctx, query, targetEpoch, slotsPerEpoch).Scan(&ready)
 	if err != nil {
 		return false, fmt.Errorf("failed to check if ready to commit: %w", err)
 	}

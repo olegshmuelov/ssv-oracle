@@ -20,6 +20,7 @@ type BeaconClient struct {
 	httpClient *http.Client
 	maxRetries int
 	retryDelay time.Duration
+	spec       *Spec // Cached spec (populated on first GetSpec call)
 }
 
 // BeaconClientConfig holds configuration for the beacon client.
@@ -68,6 +69,64 @@ type FinalityCheckpoints struct {
 			Root  string `json:"root"`
 		} `json:"finalized"`
 	} `json:"data"`
+}
+
+// GetSpec fetches beacon chain spec parameters and returns a Spec struct.
+// The spec is cached after the first call.
+func (c *BeaconClient) GetSpec(ctx context.Context) (*Spec, error) {
+	if c.spec != nil {
+		return c.spec, nil
+	}
+
+	genesisTime, err := c.GetGenesisTime(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get genesis time: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/eth/v1/config/spec", c.url)
+
+	// Use interface{} because beacon spec contains mixed types (strings and arrays)
+	var response struct {
+		Data map[string]interface{} `json:"data"`
+	}
+
+	if err := c.doRequest(ctx, url, &response); err != nil {
+		return nil, fmt.Errorf("failed to get spec: %w", err)
+	}
+
+	var slotsPerEpoch uint64
+	if val, ok := response.Data["SLOTS_PER_EPOCH"]; ok {
+		if strVal, ok := val.(string); ok {
+			if _, err := fmt.Sscanf(strVal, "%d", &slotsPerEpoch); err != nil {
+				return nil, fmt.Errorf("failed to parse SLOTS_PER_EPOCH: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("SLOTS_PER_EPOCH is not a string")
+		}
+	} else {
+		return nil, fmt.Errorf("SLOTS_PER_EPOCH not found in spec")
+	}
+
+	var secondsPerSlot uint64
+	if val, ok := response.Data["SECONDS_PER_SLOT"]; ok {
+		if strVal, ok := val.(string); ok {
+			if _, err := fmt.Sscanf(strVal, "%d", &secondsPerSlot); err != nil {
+				return nil, fmt.Errorf("failed to parse SECONDS_PER_SLOT: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("SECONDS_PER_SLOT is not a string")
+		}
+	} else {
+		return nil, fmt.Errorf("SECONDS_PER_SLOT not found in spec")
+	}
+
+	c.spec = &Spec{
+		GenesisTime:   genesisTime,
+		SlotsPerEpoch: slotsPerEpoch,
+		SlotDuration:  time.Duration(secondsPerSlot) * time.Second,
+	}
+
+	return c.spec, nil
 }
 
 // GetGenesisTime returns the beacon chain genesis time.
@@ -254,8 +313,13 @@ var ErrSlotMissed = fmt.Errorf("slot missed")
 // GetLastBlockOfEpoch returns the execution block number of the last block in the given epoch.
 // It tries the last slot of the epoch first, then walks backwards if slots are missed.
 func (c *BeaconClient) GetLastBlockOfEpoch(ctx context.Context, epoch uint64) (uint64, error) {
-	startSlot := epoch * 32
-	endSlot := startSlot + 31
+	spec, err := c.GetSpec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get spec: %w", err)
+	}
+
+	startSlot := epoch * spec.SlotsPerEpoch
+	endSlot := startSlot + spec.SlotsPerEpoch - 1
 
 	for slot := endSlot; slot >= startSlot; slot-- {
 		blockNum, err := c.getExecutionBlockAtSlot(ctx, slot)
@@ -268,7 +332,7 @@ func (c *BeaconClient) GetLastBlockOfEpoch(ctx context.Context, epoch uint64) (u
 		return blockNum, nil
 	}
 
-	return 0, fmt.Errorf("no blocks found in epoch %d (all 32 slots missed)", epoch)
+	return 0, fmt.Errorf("no blocks found in epoch %d (all %d slots missed)", epoch, spec.SlotsPerEpoch)
 }
 
 // getExecutionBlockAtSlot returns the execution block number for a given beacon slot.
