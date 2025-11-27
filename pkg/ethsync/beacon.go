@@ -153,8 +153,9 @@ func (c *BeaconClient) GetGenesisTime(ctx context.Context) (time.Time, error) {
 }
 
 // GetFinalizedEpoch returns the latest finalized epoch.
+// Uses head state to get the most up-to-date finalization info.
 func (c *BeaconClient) GetFinalizedEpoch(ctx context.Context) (uint64, error) {
-	url := fmt.Sprintf("%s/eth/v1/beacon/states/finalized/finality_checkpoints", c.url)
+	url := fmt.Sprintf("%s/eth/v1/beacon/states/head/finality_checkpoints", c.url)
 
 	var checkpoints FinalityCheckpoints
 	err := c.doRequest(ctx, url, &checkpoints)
