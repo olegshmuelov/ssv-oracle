@@ -124,7 +124,7 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 	}
 
 	// Step 3: Fetch and store validator balances from finalized state
-	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch); err != nil {
+	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch, spec.SlotsPerEpoch); err != nil {
 		return fmt.Errorf("failed to fetch balances: %w", err)
 	}
 
@@ -170,6 +170,7 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 func (o *Oracle) waitForFinalization(ctx context.Context, beaconClient *ethsync.BeaconClient, spec *ethsync.Spec, targetEpoch uint64) (*ethsync.FinalizedCheckpoint, error) {
 	var lastLoggedCheckpoint uint64
 	var lastLoggedSlot uint64
+	var checkpointRetries int
 
 	for {
 		now := time.Now()
@@ -179,10 +180,12 @@ func (o *Oracle) waitForFinalization(ctx context.Context, beaconClient *ethsync.
 
 		checkpoint, err := beaconClient.GetFinalizedCheckpoint(ctx)
 		if err != nil {
-			log.Printf("Warning: failed to get checkpoint: %v, retrying...", err)
+			checkpointRetries++
+			log.Printf("Warning: failed to get checkpoint (attempt %d): %v, retrying...", checkpointRetries, err)
 			time.Sleep(spec.SlotDuration)
 			continue
 		}
+		checkpointRetries = 0 // Reset on success
 
 		// Finalized when checkpoint.Epoch > targetEpoch
 		if targetEpoch < checkpoint.Epoch {
@@ -251,13 +254,8 @@ func (o *Oracle) loadTimingConfig(ctx context.Context) error {
 
 // fetchAndStoreBalances fetches effective balances from finalized beacon state for all active validators.
 // Stores balances with targetEpoch. Only stores balances that changed since the previous epoch.
-func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64) error {
-	spec, err := beaconClient.GetSpec(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get beacon spec: %w", err)
-	}
-
-	validators, err := o.storage.GetActiveValidatorsWithClusters(ctx, targetEpoch, spec.SlotsPerEpoch)
+func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64, slotsPerEpoch uint64) error {
+	validators, err := o.storage.GetActiveValidatorsWithClusters(ctx, targetEpoch, slotsPerEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to get active validators: %w", err)
 	}
