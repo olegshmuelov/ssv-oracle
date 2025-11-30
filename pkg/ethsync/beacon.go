@@ -152,23 +152,97 @@ func (c *BeaconClient) GetGenesisTime(ctx context.Context) (time.Time, error) {
 	return time.Unix(genesisTimestamp, 0).UTC(), nil
 }
 
-// GetFinalizedEpoch returns the latest finalized epoch.
+// FinalizedCheckpoint contains finalization info including the reference block.
+type FinalizedCheckpoint struct {
+	Epoch    uint64 // The finalized epoch (note: only slots up to checkpoint block are finalized)
+	BlockNum uint64 // Execution block number of the checkpoint block
+}
+
+// GetFinalizedCheckpoint returns the finalized checkpoint with its execution block number.
 // Uses head state to get the most up-to-date finalization info.
-func (c *BeaconClient) GetFinalizedEpoch(ctx context.Context) (uint64, error) {
+//
+// IMPORTANT: When finalized.epoch = X, only slots up to and including the checkpoint
+// block are finalized. If the first slot of epoch X was missed, the checkpoint block
+// may be in epoch X-1. The checkpoint block is the last finalized block.
+func (c *BeaconClient) GetFinalizedCheckpoint(ctx context.Context) (*FinalizedCheckpoint, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/states/head/finality_checkpoints", c.url)
 
 	var checkpoints FinalityCheckpoints
 	err := c.doRequest(ctx, url, &checkpoints)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get finality checkpoints: %w", err)
+		return nil, fmt.Errorf("failed to get finality checkpoints: %w", err)
 	}
 
 	var epoch uint64
 	if _, err := fmt.Sscanf(checkpoints.Data.Finalized.Epoch, "%d", &epoch); err != nil {
-		return 0, fmt.Errorf("failed to parse finalized epoch: %w", err)
+		return nil, fmt.Errorf("failed to parse finalized epoch: %w", err)
 	}
 
-	return epoch, nil
+	// Get execution block number from checkpoint root (single API call)
+	blockNum, err := c.getExecutionBlockFromRoot(ctx, checkpoints.Data.Finalized.Root)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get execution block from checkpoint root: %w", err)
+	}
+
+	return &FinalizedCheckpoint{
+		Epoch:    epoch,
+		BlockNum: blockNum,
+	}, nil
+}
+
+// GetFinalizedEpoch returns the latest finalized epoch.
+// Uses head state to get the most up-to-date finalization info.
+func (c *BeaconClient) GetFinalizedEpoch(ctx context.Context) (uint64, error) {
+	checkpoint, err := c.GetFinalizedCheckpoint(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return checkpoint.Epoch, nil
+}
+
+// getExecutionBlockFromRoot returns the execution block number for a beacon block root.
+func (c *BeaconClient) getExecutionBlockFromRoot(ctx context.Context, blockRoot string) (uint64, error) {
+	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", c.url, blockRoot)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Data struct {
+			Message struct {
+				Body struct {
+					ExecutionPayload struct {
+						BlockNumber string `json:"block_number"`
+					} `json:"execution_payload"`
+				} `json:"body"`
+			} `json:"message"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	var blockNum uint64
+	if _, err := fmt.Sscanf(response.Data.Message.Body.ExecutionPayload.BlockNumber, "%d", &blockNum); err != nil {
+		return 0, fmt.Errorf("failed to parse block number: %w", err)
+	}
+
+	return blockNum, nil
 }
 
 const (
@@ -178,17 +252,13 @@ const (
 	maxParallelRequests = 5
 )
 
-// GetValidatorBalances fetches effective balances for validators at a specific epoch.
+// GetValidatorBalances fetches effective balances for validators at a specific slot.
+// slot is the beacon slot to query state at (use first slot of an epoch for epoch boundary state).
 // pubkeys is a list of validator public keys (48 bytes each).
 // Returns a map of pubkey (hex with 0x prefix) -> effective balance in Gwei.
 //
 // Requests are batched (1000 per request) with limited parallelism (5 concurrent).
-//
-// TODO: Currently uses "finalized" state instead of specific epoch because most beacon
-// nodes prune historical states. Switch to epoch-specific query when using archive node.
-func (c *BeaconClient) GetValidatorBalances(ctx context.Context, epoch uint64, pubkeys [][]byte) (map[string]uint64, error) {
-	_ = epoch // TODO: use epoch when we have archive node
-
+func (c *BeaconClient) GetValidatorBalances(ctx context.Context, slot uint64, pubkeys [][]byte) (map[string]uint64, error) {
 	if len(pubkeys) == 0 {
 		return make(map[string]uint64), nil
 	}
@@ -212,7 +282,7 @@ func (c *BeaconClient) GetValidatorBalances(ctx context.Context, epoch uint64, p
 
 	for _, batch := range batches {
 		g.Go(func() error {
-			balances, err := c.fetchValidatorBatch(ctx, batch)
+			balances, err := c.fetchValidatorBatch(ctx, slot, batch)
 			if err != nil {
 				return err
 			}
@@ -233,12 +303,8 @@ func (c *BeaconClient) GetValidatorBalances(ctx context.Context, epoch uint64, p
 }
 
 // fetchValidatorBatch fetches effective balances for a single batch of validators.
-func (c *BeaconClient) fetchValidatorBatch(ctx context.Context, pubkeys [][]byte) (map[string]uint64, error) {
-	// TODO: Use specific slot when we have archive node:
-	// slot := epoch * 32
-	// stateID := fmt.Sprintf("%d", slot)
-	// For now, use "finalized" since most beacon nodes prune historical states
-	url := fmt.Sprintf("%s/eth/v1/beacon/states/finalized/validators", c.url)
+func (c *BeaconClient) fetchValidatorBatch(ctx context.Context, slot uint64, pubkeys [][]byte) (map[string]uint64, error) {
+	url := fmt.Sprintf("%s/eth/v1/beacon/states/%d/validators", c.url, slot)
 
 	// Use POST request with validator IDs to fetch only the validators we need
 	ids := make([]string, len(pubkeys))
@@ -293,8 +359,8 @@ func (c *BeaconClient) fetchValidatorBatch(ctx context.Context, pubkeys [][]byte
 }
 
 // GetValidatorBalance fetches effective balance for a single validator.
-func (c *BeaconClient) GetValidatorBalance(ctx context.Context, epoch uint64, pubkey []byte) (uint64, error) {
-	balances, err := c.GetValidatorBalances(ctx, epoch, [][]byte{pubkey})
+func (c *BeaconClient) GetValidatorBalance(ctx context.Context, slot uint64, pubkey []byte) (uint64, error) {
+	balances, err := c.GetValidatorBalances(ctx, slot, [][]byte{pubkey})
 	if err != nil {
 		return 0, err
 	}
@@ -306,86 +372,6 @@ func (c *BeaconClient) GetValidatorBalance(ctx context.Context, epoch uint64, pu
 	}
 
 	return balance, nil
-}
-
-// ErrSlotMissed indicates a slot had no block (missed slot).
-var ErrSlotMissed = fmt.Errorf("slot missed")
-
-// GetLastBlockOfEpoch returns the execution block number of the last block in the given epoch.
-// It tries the last slot of the epoch first, then walks backwards if slots are missed.
-func (c *BeaconClient) GetLastBlockOfEpoch(ctx context.Context, epoch uint64) (uint64, error) {
-	spec, err := c.GetSpec(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get spec: %w", err)
-	}
-
-	startSlot := epoch * spec.SlotsPerEpoch
-	endSlot := startSlot + spec.SlotsPerEpoch - 1
-
-	for slot := endSlot; slot >= startSlot; slot-- {
-		blockNum, err := c.getExecutionBlockAtSlot(ctx, slot)
-		if err == ErrSlotMissed {
-			continue
-		}
-		if err != nil {
-			return 0, fmt.Errorf("failed to get block at slot %d: %w", slot, err)
-		}
-		return blockNum, nil
-	}
-
-	return 0, fmt.Errorf("no blocks found in epoch %d (all %d slots missed)", epoch, spec.SlotsPerEpoch)
-}
-
-// getExecutionBlockAtSlot returns the execution block number for a given beacon slot.
-// Returns ErrSlotMissed if the slot has no block.
-func (c *BeaconClient) getExecutionBlockAtSlot(ctx context.Context, slot uint64) (uint64, error) {
-	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%d", c.url, slot)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	// 404 means slot was missed (no block)
-	if resp.StatusCode == http.StatusNotFound {
-		return 0, ErrSlotMissed
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response to get execution block number
-	var response struct {
-		Data struct {
-			Message struct {
-				Body struct {
-					ExecutionPayload struct {
-						BlockNumber string `json:"block_number"`
-					} `json:"execution_payload"`
-				} `json:"body"`
-			} `json:"message"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return 0, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	var blockNum uint64
-	if _, err := fmt.Sscanf(response.Data.Message.Body.ExecutionPayload.BlockNumber, "%d", &blockNum); err != nil {
-		return 0, fmt.Errorf("failed to parse block number: %w", err)
-	}
-
-	return blockNum, nil
 }
 
 // doRequest performs an HTTP GET request with retries.
