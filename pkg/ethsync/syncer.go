@@ -160,6 +160,7 @@ func (s *EventSyncer) syncOnce(ctx context.Context) error {
 
 	// Nothing to sync?
 	if fromBlock >= finalizedBlock {
+		log.Printf("Events: already synced to block %d", fromBlock)
 		return nil
 	}
 

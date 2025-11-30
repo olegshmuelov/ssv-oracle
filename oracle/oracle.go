@@ -33,7 +33,7 @@ func New(cfg *Config) *Oracle {
 	}
 }
 
-// Run starts the oracle loop, waking at each epoch boundary to check for commit opportunities.
+// Run starts the oracle loop, processing rounds continuously.
 func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconClient *ethsync.BeaconClient) error {
 	log.Println("Oracle starting...")
 
@@ -49,117 +49,86 @@ func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconCli
 		return fmt.Errorf("failed to get oracle config: %w", err)
 	}
 
-	log.Printf("Oracle config: startEpoch=%d, epochInterval=%d epochs",
+	log.Printf("Oracle config: startEpoch=%d, epochInterval=%d",
 		o.timingConfig.StartEpoch, o.timingConfig.EpochInterval)
 
-	// On startup, assume current round is already handled to avoid duplicate commits.
-	// Calculate current round and skip it - we'll commit starting from next round.
-	finalizedEpoch, err := beaconClient.GetFinalizedEpoch(ctx)
+	// On startup, calculate which rounds are already fully finalized and skip them.
+	// This avoids duplicate commits if oracle restarts after committing.
+	// A round N (target = startEpoch + N*interval) is finalized when checkpoint.Epoch > targetEpoch.
+	checkpoint, err := beaconClient.GetFinalizedCheckpoint(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get finalized epoch: %w", err)
+		return fmt.Errorf("failed to get finalized checkpoint: %w", err)
 	}
 
-	if finalizedEpoch >= o.timingConfig.StartEpoch {
-		epochsSinceStart := finalizedEpoch - o.timingConfig.StartEpoch
-		// Ceiling division: determines which round we're in
-		currentRound := (epochsSinceStart + o.timingConfig.EpochInterval - 1) / o.timingConfig.EpochInterval
-		o.lastCommittedRound = currentRound
-		log.Printf("Startup: skipping round %d (will commit from round %d)", currentRound, currentRound+1)
-	}
-
-	for {
-		now := time.Now()
-		currentSlot := uint64(now.Sub(spec.GenesisTime) / spec.SlotDuration)
-		currentEpoch := currentSlot / spec.SlotsPerEpoch
-		nextEpoch := currentEpoch + 1
-
-		nextEpochSlot := nextEpoch * spec.SlotsPerEpoch
-		nextEpochTime := spec.GenesisTime.Add(time.Duration(nextEpochSlot) * spec.SlotDuration)
-		waitDuration := time.Until(nextEpochTime)
-
-		log.Printf("Waiting for epoch %d (in %v)", nextEpoch, waitDuration.Round(time.Second))
-
-		select {
-		case <-ctx.Done():
-			log.Println("Oracle stopping...")
-			return ctx.Err()
-		case <-time.After(waitDuration):
+	if checkpoint.Epoch > o.timingConfig.StartEpoch {
+		// Calculate highest round that is fully finalized (checkpoint.Epoch > targetEpoch)
+		// Round N target = startEpoch + N * interval
+		// Fully finalized when: checkpoint.Epoch > startEpoch + N * interval
+		// So max finalized round = floor((checkpoint.Epoch - startEpoch - 1) / interval)
+		maxFinalizedRound := (checkpoint.Epoch - o.timingConfig.StartEpoch - 1) / o.timingConfig.EpochInterval
+		o.lastCommittedRound = maxFinalizedRound
+		nextRound := maxFinalizedRound + 1
+		nextTargetEpoch := o.timingConfig.StartEpoch + (nextRound * o.timingConfig.EpochInterval)
+		if maxFinalizedRound > 0 {
+			log.Printf("Startup: assuming rounds 1-%d already committed, next is round %d (target epoch %d)",
+				maxFinalizedRound, nextRound, nextTargetEpoch)
+		} else {
+			log.Printf("Startup: no rounds finalized yet, will start from round %d (target epoch %d)",
+				nextRound, nextTargetEpoch)
 		}
+	}
 
-		if err := o.cycle(ctx, syncer, beaconClient); err != nil {
-			log.Printf("Cycle error: %v", err)
+	// Main loop: process rounds continuously
+	for {
+		if err := o.processRound(ctx, syncer, beaconClient, spec); err != nil {
+			if ctx.Err() != nil {
+				log.Println("Oracle stopping...")
+				return ctx.Err()
+			}
+			log.Printf("Round error: %v", err)
+			// Brief pause before retrying on error
+			time.Sleep(10 * time.Second)
 		}
 	}
 }
 
-// cycle executes one oracle cycle:
-// 1. Syncs events to finalized epoch
-// 2. Calculates current round and target epoch using spec formulas
-// 3. Checks if target epoch is finalized and not yet committed
-// 4. Fetches effective balances for target epoch
-// 5. Builds merkle root from cluster balances
-// 6. Commits to contract and updates tracking
-func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconClient *ethsync.BeaconClient) error {
-	if err := syncer.SyncIncremental(ctx); err != nil {
-		return fmt.Errorf("failed to sync events: %w", err)
-	}
-
+// processRound handles one oracle round:
+// 1. Waits for target epoch to be finalized (polling every slot)
+// 2. Syncs events to finalized block
+// 3. Fetches effective balances for target epoch
+// 4. Builds merkle root from cluster balances
+// 5. Commits to contract and updates tracking
+func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, beaconClient *ethsync.BeaconClient, spec *ethsync.Spec) error {
 	config := o.timingConfig
 
-	spec, err := beaconClient.GetSpec(ctx)
+	nextRound := o.lastCommittedRound + 1
+	targetEpoch := config.StartEpoch + (nextRound * config.EpochInterval)
+
+	log.Printf("--- Round %d: target epoch %d ---", nextRound, targetEpoch)
+
+	// Step 1: Wait for target epoch to be finalized
+	checkpoint, err := o.waitForFinalization(ctx, beaconClient, spec, targetEpoch)
 	if err != nil {
-		return fmt.Errorf("failed to get beacon spec: %w", err)
+		return err
 	}
 
-	finalizedEpoch, err := beaconClient.GetFinalizedEpoch(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get finalized epoch: %w", err)
-	}
-
-	// Calculate current epoch from wall clock
 	currentSlot := uint64(time.Now().Sub(spec.GenesisTime) / spec.SlotDuration)
 	currentEpoch := currentSlot / spec.SlotsPerEpoch
 
-	if finalizedEpoch < config.StartEpoch {
-		log.Printf("Waiting for start epoch (current=%d, finalized=%d, start=%d)", currentEpoch, finalizedEpoch, config.StartEpoch)
-		return nil
+	log.Printf("Epoch %d finalized (current=%d, checkpoint: epoch=%d block=%d)",
+		targetEpoch, currentEpoch, checkpoint.Epoch, checkpoint.BlockNum)
+
+	// Step 2: Sync events to finalized block
+	if err := syncer.SyncToBlock(ctx, checkpoint.BlockNum); err != nil {
+		return fmt.Errorf("failed to sync to block %d: %w", checkpoint.BlockNum, err)
 	}
 
-	epochsSinceStart := finalizedEpoch - config.StartEpoch
-	// Ceiling division: determines which round we're in based on epochs elapsed
-	currentRound := (epochsSinceStart + config.EpochInterval - 1) / config.EpochInterval
-
-	targetEpoch := config.StartEpoch + (currentRound * config.EpochInterval)
-
-	if targetEpoch > finalizedEpoch {
-		log.Printf("Waiting for target epoch %d to be finalized (round %d, current=%d, finalized=%d)",
-			targetEpoch, currentRound, currentEpoch, finalizedEpoch)
-		return nil
-	}
-
-	// Check if already committed (prevents duplicate attempts when finalization is stuck)
-	if currentRound <= o.lastCommittedRound {
-		log.Printf("Round %d already committed (last=%d), skipping", currentRound, o.lastCommittedRound)
-		return nil
-	}
-
-	log.Printf("--- Cycle: round %d, target epoch %d (current=%d, finalized=%d) ---",
-		currentRound, targetEpoch, currentEpoch, finalizedEpoch)
-
-	targetBlock, err := beaconClient.GetLastBlockOfEpoch(ctx, targetEpoch)
-	if err != nil {
-		return fmt.Errorf("failed to get last block of epoch %d: %w", targetEpoch, err)
-	}
-
-	// Sync events up to last block of target epoch for complete cluster membership
-	if err := syncer.SyncToBlock(ctx, targetBlock); err != nil {
-		return fmt.Errorf("failed to sync to block %d: %w", targetBlock, err)
-	}
-
+	// Step 3: Fetch and store validator balances from finalized state
 	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch, spec.SlotsPerEpoch); err != nil {
 		return fmt.Errorf("failed to fetch balances: %w", err)
 	}
 
+	// Step 4: Build merkle tree
 	clusterBalances, err := o.storage.GetClusterBalances(ctx, targetEpoch, spec.SlotsPerEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster balances: %w", err)
@@ -175,7 +144,8 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 	merkleRoot := merkle.BuildMerkleTree(clusterMap)
 	log.Printf("Merkle root: 0x%x (%d clusters)", merkleRoot[:], len(clusterBalances))
 
-	txHash, err := o.contractClient.CommitRoot(ctx, currentRound, merkleRoot, targetBlock, targetEpoch)
+	// Step 5: Commit to contract
+	txHash, err := o.contractClient.CommitRoot(ctx, nextRound, merkleRoot, checkpoint.BlockNum, targetEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
@@ -186,13 +156,85 @@ func (o *Oracle) cycle(ctx context.Context, syncer *ethsync.EventSyncer, beaconC
 	}
 
 	if receipt.Status == 1 {
-		log.Printf("✓ Committed (tx: %s)", txHash)
-		o.lastCommittedRound = currentRound
+		log.Printf("Committed round %d (tx: %s)", nextRound, txHash)
+		o.lastCommittedRound = nextRound
 	} else {
 		return fmt.Errorf("transaction reverted")
 	}
 
 	return nil
+}
+
+// waitForFinalization waits until targetEpoch is fully finalized.
+// Polls at slot boundaries, with coarse waiting when target is far ahead.
+func (o *Oracle) waitForFinalization(ctx context.Context, beaconClient *ethsync.BeaconClient, spec *ethsync.Spec, targetEpoch uint64) (*ethsync.FinalizedCheckpoint, error) {
+	var lastLoggedCheckpoint uint64
+	var lastLoggedSlot uint64
+	var checkpointRetries int
+
+	for {
+		now := time.Now()
+		currentSlot := uint64(now.Sub(spec.GenesisTime) / spec.SlotDuration)
+		currentEpoch := currentSlot / spec.SlotsPerEpoch
+		slotInEpoch := (currentSlot % spec.SlotsPerEpoch) + 1
+
+		checkpoint, err := beaconClient.GetFinalizedCheckpoint(ctx)
+		if err != nil {
+			checkpointRetries++
+			log.Printf("Warning: failed to get checkpoint (attempt %d): %v, retrying...", checkpointRetries, err)
+			time.Sleep(spec.SlotDuration)
+			continue
+		}
+		checkpointRetries = 0 // Reset on success
+
+		// Finalized when checkpoint.Epoch > targetEpoch
+		if targetEpoch < checkpoint.Epoch {
+			log.Printf("Slot %d (epoch %d, %d/%d) - finalization detected!",
+				currentSlot, currentEpoch, slotInEpoch, spec.SlotsPerEpoch)
+			return checkpoint, nil
+		}
+
+		// Wait based on distance to target
+		epochsAhead := int64(targetEpoch) - int64(checkpoint.Epoch)
+		if epochsAhead > 1 {
+			// Far from target: coarse wait
+			if checkpoint.Epoch != lastLoggedCheckpoint {
+				log.Printf("Slot %d (epoch %d, %d/%d) - waiting for epoch %d (checkpoint: %d, need > %d)",
+					currentSlot, currentEpoch, slotInEpoch, spec.SlotsPerEpoch,
+					targetEpoch, checkpoint.Epoch, targetEpoch)
+				lastLoggedCheckpoint = checkpoint.Epoch
+				lastLoggedSlot = currentSlot
+			}
+			waitEpochs := epochsAhead - 1
+			waitTime := time.Duration(uint64(waitEpochs)*spec.SlotsPerEpoch) * spec.SlotDuration
+			log.Printf("Target is %d epochs ahead, waiting %v", epochsAhead, waitTime.Round(time.Second))
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(waitTime):
+			}
+		} else {
+			// Close to target: poll at slot boundaries
+			if checkpoint.Epoch != lastLoggedCheckpoint {
+				log.Printf("Slot %d (epoch %d, %d/%d) - waiting for epoch %d (checkpoint: %d, need > %d)",
+					currentSlot, currentEpoch, slotInEpoch, spec.SlotsPerEpoch,
+					targetEpoch, checkpoint.Epoch, targetEpoch)
+				lastLoggedCheckpoint = checkpoint.Epoch
+				lastLoggedSlot = currentSlot
+			} else if currentSlot != lastLoggedSlot {
+				log.Printf("Slot %d (epoch %d, %d/%d)", currentSlot, currentEpoch, slotInEpoch, spec.SlotsPerEpoch)
+				lastLoggedSlot = currentSlot
+			}
+
+			nextSlotTime := spec.GenesisTime.Add(time.Duration(currentSlot+1) * spec.SlotDuration)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Until(nextSlotTime)):
+			}
+		}
+	}
 }
 
 // loadTimingConfig fetches timing config from contract and caches it.
@@ -210,8 +252,8 @@ func (o *Oracle) loadTimingConfig(ctx context.Context) error {
 	return nil
 }
 
-// fetchAndStoreBalances fetches effective balances from beacon chain for all active validators
-// at the target epoch. Only stores balances that changed since the previous epoch.
+// fetchAndStoreBalances fetches effective balances from finalized beacon state for all active validators.
+// Stores balances with targetEpoch. Only stores balances that changed since the previous epoch.
 func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64, slotsPerEpoch uint64) error {
 	validators, err := o.storage.GetActiveValidatorsWithClusters(ctx, targetEpoch, slotsPerEpoch)
 	if err != nil {
@@ -234,7 +276,7 @@ func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsyn
 		}
 	}
 
-	balanceMap, err := beaconClient.GetValidatorBalances(ctx, targetEpoch, pubkeys)
+	balanceMap, err := beaconClient.GetFinalizedValidatorBalances(ctx, pubkeys)
 	if err != nil {
 		return fmt.Errorf("failed to fetch validator balances: %w", err)
 	}

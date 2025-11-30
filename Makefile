@@ -25,9 +25,18 @@ build: ## Build the oracle binary
 	@go build $(LDFLAGS) -o ssv-oracle ./cmd/oracle
 	@echo "✓ Build complete: ./ssv-oracle"
 
-test: ## Run all tests
-	@echo "Running tests..."
+test: ## Run unit tests (no database required)
+	@echo "Running unit tests..."
 	@go test -v ./...
+
+test-all: db-up ## Run all tests including integration (requires database)
+	@echo "Running all tests (unit + integration)..."
+	@sleep 2
+	@echo "Creating test database if not exists..."
+	@docker-compose exec -T postgres psql -U oracle -d ssv_oracle -c "SELECT 1 FROM pg_database WHERE datname = 'ssv_oracle_test'" | grep -q 1 || \
+		docker-compose exec -T postgres psql -U oracle -d ssv_oracle -c "CREATE DATABASE ssv_oracle_test"
+	@docker-compose exec -T postgres psql -U oracle -d ssv_oracle_test -f /docker-entrypoint-initdb.d/schema.sql
+	@go test -v -tags=integration ./...
 
 clean: ## Clean build artifacts
 	@echo "Cleaning..."
