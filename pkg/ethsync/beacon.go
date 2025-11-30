@@ -190,16 +190,6 @@ func (c *BeaconClient) GetFinalizedCheckpoint(ctx context.Context) (*FinalizedCh
 	}, nil
 }
 
-// GetFinalizedEpoch returns the latest finalized epoch.
-// Uses head state to get the most up-to-date finalization info.
-func (c *BeaconClient) GetFinalizedEpoch(ctx context.Context) (uint64, error) {
-	checkpoint, err := c.GetFinalizedCheckpoint(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return checkpoint.Epoch, nil
-}
-
 // getExecutionBlockFromRoot returns the execution block number for a beacon block root.
 func (c *BeaconClient) getExecutionBlockFromRoot(ctx context.Context, blockRoot string) (uint64, error) {
 	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", c.url, blockRoot)
