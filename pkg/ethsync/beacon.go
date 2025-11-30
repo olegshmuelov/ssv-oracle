@@ -155,6 +155,7 @@ func (c *BeaconClient) GetGenesisTime(ctx context.Context) (time.Time, error) {
 // FinalizedCheckpoint contains finalization info including the reference block.
 type FinalizedCheckpoint struct {
 	Epoch    uint64 // The finalized epoch (note: only slots up to checkpoint block are finalized)
+	Slot     uint64 // Beacon slot of the checkpoint block (last finalized slot)
 	BlockNum uint64 // Execution block number of the checkpoint block
 }
 
@@ -178,42 +179,44 @@ func (c *BeaconClient) GetFinalizedCheckpoint(ctx context.Context) (*FinalizedCh
 		return nil, fmt.Errorf("failed to parse finalized epoch: %w", err)
 	}
 
-	// Get execution block number from checkpoint root (single API call)
-	blockNum, err := c.getExecutionBlockFromRoot(ctx, checkpoints.Data.Finalized.Root)
+	// Get slot and execution block number from checkpoint root (single API call)
+	slot, blockNum, err := c.getBlockInfoFromRoot(ctx, checkpoints.Data.Finalized.Root)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get execution block from checkpoint root: %w", err)
+		return nil, fmt.Errorf("failed to get block info from checkpoint root: %w", err)
 	}
 
 	return &FinalizedCheckpoint{
 		Epoch:    epoch,
+		Slot:     slot,
 		BlockNum: blockNum,
 	}, nil
 }
 
-// getExecutionBlockFromRoot returns the execution block number for a beacon block root.
-func (c *BeaconClient) getExecutionBlockFromRoot(ctx context.Context, blockRoot string) (uint64, error) {
+// getBlockInfoFromRoot returns the beacon slot and execution block number for a beacon block root.
+func (c *BeaconClient) getBlockInfoFromRoot(ctx context.Context, blockRoot string) (slot uint64, blockNum uint64, err error) {
 	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", c.url, blockRoot)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
+		return 0, 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+		return 0, 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Data struct {
 			Message struct {
+				Slot string `json:"slot"`
 				Body struct {
 					ExecutionPayload struct {
 						BlockNumber string `json:"block_number"`
@@ -224,15 +227,18 @@ func (c *BeaconClient) getExecutionBlockFromRoot(ctx context.Context, blockRoot 
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return 0, fmt.Errorf("failed to decode response: %w", err)
+		return 0, 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	var blockNum uint64
+	if _, err := fmt.Sscanf(response.Data.Message.Slot, "%d", &slot); err != nil {
+		return 0, 0, fmt.Errorf("failed to parse slot: %w", err)
+	}
+
 	if _, err := fmt.Sscanf(response.Data.Message.Body.ExecutionPayload.BlockNumber, "%d", &blockNum); err != nil {
-		return 0, fmt.Errorf("failed to parse block number: %w", err)
+		return 0, 0, fmt.Errorf("failed to parse block number: %w", err)
 	}
 
-	return blockNum, nil
+	return slot, blockNum, nil
 }
 
 const (

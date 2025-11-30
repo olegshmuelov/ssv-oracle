@@ -54,7 +54,7 @@ func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconCli
 
 	// On startup, calculate which rounds are already fully finalized and skip them.
 	// This avoids duplicate commits if oracle restarts after committing.
-	// A round N (target = startEpoch + N*interval) is fully finalized when checkpoint.Epoch > target.
+	// A round N (target = startEpoch + N*interval) is finalized when checkpoint.Epoch > targetEpoch.
 	checkpoint, err := beaconClient.GetFinalizedCheckpoint(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get finalized checkpoint: %w", err)
@@ -64,7 +64,6 @@ func (o *Oracle) Run(ctx context.Context, syncer *ethsync.EventSyncer, beaconCli
 		// Calculate highest round that is fully finalized (checkpoint.Epoch > targetEpoch)
 		// Round N target = startEpoch + N * interval
 		// Fully finalized when: checkpoint.Epoch > startEpoch + N * interval
-		// i.e., N < (checkpoint.Epoch - startEpoch) / interval
 		// So max finalized round = floor((checkpoint.Epoch - startEpoch - 1) / interval)
 		maxFinalizedRound := (checkpoint.Epoch - o.timingConfig.StartEpoch - 1) / o.timingConfig.EpochInterval
 		o.lastCommittedRound = maxFinalizedRound
@@ -116,8 +115,8 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 	currentSlot := uint64(time.Now().Sub(spec.GenesisTime) / spec.SlotDuration)
 	currentEpoch := currentSlot / spec.SlotsPerEpoch
 
-	log.Printf("Epoch %d finalized (current=%d, checkpoint=%d, block=%d)",
-		targetEpoch, currentEpoch, checkpoint.Epoch, checkpoint.BlockNum)
+	log.Printf("Epoch %d finalized (current=%d, checkpoint: epoch=%d slot=%d block=%d)",
+		targetEpoch, currentEpoch, checkpoint.Epoch, checkpoint.Slot, checkpoint.BlockNum)
 
 	// Step 2: Sync events to finalized block
 	if err := syncer.SyncToBlock(ctx, checkpoint.BlockNum); err != nil {
@@ -125,8 +124,8 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 	}
 
 	// Step 3: Fetch and store validator balances
-	// Query at first slot of checkpoint.Epoch (the epoch boundary after targetEpoch)
-	balanceSlot := checkpoint.Epoch * spec.SlotsPerEpoch
+	// Query at checkpoint slot (guaranteed finalized) to get effective balances.
+	balanceSlot := checkpoint.Slot
 	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch, balanceSlot); err != nil {
 		return fmt.Errorf("failed to fetch balances: %w", err)
 	}
