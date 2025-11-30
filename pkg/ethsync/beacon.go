@@ -154,17 +154,12 @@ func (c *BeaconClient) GetGenesisTime(ctx context.Context) (time.Time, error) {
 
 // FinalizedCheckpoint contains finalization info including the reference block.
 type FinalizedCheckpoint struct {
-	Epoch    uint64 // The finalized epoch (note: only slots up to checkpoint block are finalized)
-	Slot     uint64 // Beacon slot of the checkpoint block (last finalized slot)
+	Epoch    uint64 // The finalized epoch
 	BlockNum uint64 // Execution block number of the checkpoint block
 }
 
 // GetFinalizedCheckpoint returns the finalized checkpoint with its execution block number.
 // Uses head state to get the most up-to-date finalization info.
-//
-// IMPORTANT: When finalized.epoch = X, only slots up to and including the checkpoint
-// block are finalized. If the first slot of epoch X was missed, the checkpoint block
-// may be in epoch X-1. The checkpoint block is the last finalized block.
 func (c *BeaconClient) GetFinalizedCheckpoint(ctx context.Context) (*FinalizedCheckpoint, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/states/head/finality_checkpoints", c.url)
 
@@ -179,44 +174,42 @@ func (c *BeaconClient) GetFinalizedCheckpoint(ctx context.Context) (*FinalizedCh
 		return nil, fmt.Errorf("failed to parse finalized epoch: %w", err)
 	}
 
-	// Get slot and execution block number from checkpoint root (single API call)
-	slot, blockNum, err := c.getBlockInfoFromRoot(ctx, checkpoints.Data.Finalized.Root)
+	// Get execution block number from checkpoint root
+	blockNum, err := c.getExecutionBlockFromRoot(ctx, checkpoints.Data.Finalized.Root)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get block info from checkpoint root: %w", err)
+		return nil, fmt.Errorf("failed to get execution block from checkpoint root: %w", err)
 	}
 
 	return &FinalizedCheckpoint{
 		Epoch:    epoch,
-		Slot:     slot,
 		BlockNum: blockNum,
 	}, nil
 }
 
-// getBlockInfoFromRoot returns the beacon slot and execution block number for a beacon block root.
-func (c *BeaconClient) getBlockInfoFromRoot(ctx context.Context, blockRoot string) (slot uint64, blockNum uint64, err error) {
+// getExecutionBlockFromRoot returns the execution block number for a beacon block root.
+func (c *BeaconClient) getExecutionBlockFromRoot(ctx context.Context, blockRoot string) (uint64, error) {
 	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", c.url, blockRoot)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create request: %w", err)
+		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return 0, 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+		return 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Data struct {
 			Message struct {
-				Slot string `json:"slot"`
 				Body struct {
 					ExecutionPayload struct {
 						BlockNumber string `json:"block_number"`
@@ -227,18 +220,15 @@ func (c *BeaconClient) getBlockInfoFromRoot(ctx context.Context, blockRoot strin
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return 0, 0, fmt.Errorf("failed to decode response: %w", err)
+		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if _, err := fmt.Sscanf(response.Data.Message.Slot, "%d", &slot); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse slot: %w", err)
-	}
-
+	var blockNum uint64
 	if _, err := fmt.Sscanf(response.Data.Message.Body.ExecutionPayload.BlockNumber, "%d", &blockNum); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse block number: %w", err)
+		return 0, fmt.Errorf("failed to parse block number: %w", err)
 	}
 
-	return slot, blockNum, nil
+	return blockNum, nil
 }
 
 const (
@@ -248,13 +238,12 @@ const (
 	maxParallelRequests = 5
 )
 
-// GetValidatorBalances fetches effective balances for validators at a specific slot.
-// slot is the beacon slot to query state at (use first slot of an epoch for epoch boundary state).
+// GetFinalizedValidatorBalances fetches effective balances for validators from the finalized state.
 // pubkeys is a list of validator public keys (48 bytes each).
 // Returns a map of pubkey (hex with 0x prefix) -> effective balance in Gwei.
 //
 // Requests are batched (1000 per request) with limited parallelism (5 concurrent).
-func (c *BeaconClient) GetValidatorBalances(ctx context.Context, slot uint64, pubkeys [][]byte) (map[string]uint64, error) {
+func (c *BeaconClient) GetFinalizedValidatorBalances(ctx context.Context, pubkeys [][]byte) (map[string]uint64, error) {
 	if len(pubkeys) == 0 {
 		return make(map[string]uint64), nil
 	}
@@ -278,7 +267,7 @@ func (c *BeaconClient) GetValidatorBalances(ctx context.Context, slot uint64, pu
 
 	for _, batch := range batches {
 		g.Go(func() error {
-			balances, err := c.fetchValidatorBatch(ctx, slot, batch)
+			balances, err := c.fetchValidatorBatchFinalized(ctx, batch)
 			if err != nil {
 				return err
 			}
@@ -298,9 +287,9 @@ func (c *BeaconClient) GetValidatorBalances(ctx context.Context, slot uint64, pu
 	return merged, nil
 }
 
-// fetchValidatorBatch fetches effective balances for a single batch of validators.
-func (c *BeaconClient) fetchValidatorBatch(ctx context.Context, slot uint64, pubkeys [][]byte) (map[string]uint64, error) {
-	url := fmt.Sprintf("%s/eth/v1/beacon/states/%d/validators", c.url, slot)
+// fetchValidatorBatchFinalized fetches effective balances for a single batch of validators from finalized state.
+func (c *BeaconClient) fetchValidatorBatchFinalized(ctx context.Context, pubkeys [][]byte) (map[string]uint64, error) {
+	url := fmt.Sprintf("%s/eth/v1/beacon/states/finalized/validators", c.url)
 
 	// Use POST request with validator IDs to fetch only the validators we need
 	ids := make([]string, len(pubkeys))
@@ -352,22 +341,6 @@ func (c *BeaconClient) fetchValidatorBatch(ctx context.Context, slot uint64, pub
 	}
 
 	return result, nil
-}
-
-// GetValidatorBalance fetches effective balance for a single validator.
-func (c *BeaconClient) GetValidatorBalance(ctx context.Context, slot uint64, pubkey []byte) (uint64, error) {
-	balances, err := c.GetValidatorBalances(ctx, slot, [][]byte{pubkey})
-	if err != nil {
-		return 0, err
-	}
-
-	pubkeyHex := fmt.Sprintf("0x%x", pubkey)
-	balance, ok := balances[pubkeyHex]
-	if !ok {
-		return 0, fmt.Errorf("validator %s not found", pubkeyHex)
-	}
-
-	return balance, nil
 }
 
 // doRequest performs an HTTP GET request with retries.

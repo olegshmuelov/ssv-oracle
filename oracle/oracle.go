@@ -115,18 +115,16 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 	currentSlot := uint64(time.Now().Sub(spec.GenesisTime) / spec.SlotDuration)
 	currentEpoch := currentSlot / spec.SlotsPerEpoch
 
-	log.Printf("Epoch %d finalized (current=%d, checkpoint: epoch=%d slot=%d block=%d)",
-		targetEpoch, currentEpoch, checkpoint.Epoch, checkpoint.Slot, checkpoint.BlockNum)
+	log.Printf("Epoch %d finalized (current=%d, checkpoint: epoch=%d block=%d)",
+		targetEpoch, currentEpoch, checkpoint.Epoch, checkpoint.BlockNum)
 
 	// Step 2: Sync events to finalized block
 	if err := syncer.SyncToBlock(ctx, checkpoint.BlockNum); err != nil {
 		return fmt.Errorf("failed to sync to block %d: %w", checkpoint.BlockNum, err)
 	}
 
-	// Step 3: Fetch and store validator balances
-	// Query at checkpoint slot (guaranteed finalized) to get effective balances.
-	balanceSlot := checkpoint.Slot
-	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch, balanceSlot); err != nil {
+	// Step 3: Fetch and store validator balances from finalized state
+	if err := o.fetchAndStoreBalances(ctx, beaconClient, targetEpoch); err != nil {
 		return fmt.Errorf("failed to fetch balances: %w", err)
 	}
 
@@ -251,10 +249,9 @@ func (o *Oracle) loadTimingConfig(ctx context.Context) error {
 	return nil
 }
 
-// fetchAndStoreBalances fetches effective balances from beacon chain for all active validators
-// at the target epoch. Only stores balances that changed since the previous epoch.
-// balanceSlot is the beacon slot to query for effective balances.
-func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64, balanceSlot uint64) error {
+// fetchAndStoreBalances fetches effective balances from finalized beacon state for all active validators.
+// Stores balances with targetEpoch. Only stores balances that changed since the previous epoch.
+func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsync.BeaconClient, targetEpoch uint64) error {
 	spec, err := beaconClient.GetSpec(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get beacon spec: %w", err)
@@ -281,7 +278,7 @@ func (o *Oracle) fetchAndStoreBalances(ctx context.Context, beaconClient *ethsyn
 		}
 	}
 
-	balanceMap, err := beaconClient.GetValidatorBalances(ctx, balanceSlot, pubkeys)
+	balanceMap, err := beaconClient.GetFinalizedValidatorBalances(ctx, pubkeys)
 	if err != nil {
 		return fmt.Errorf("failed to fetch validator balances: %w", err)
 	}
