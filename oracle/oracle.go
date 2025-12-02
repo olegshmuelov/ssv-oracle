@@ -145,17 +145,21 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 	log.Printf("Merkle root: 0x%x (%d clusters)", merkleRoot[:], len(clusterBalances))
 
 	// Step 5: Commit to contract
-	txHash, err := o.contractClient.CommitRoot(ctx, nextRound, merkleRoot, checkpoint.BlockNum, targetEpoch)
+	tx, err := o.contractClient.CommitRoot(ctx, nextRound, merkleRoot, checkpoint.BlockNum, targetEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	receipt, err := o.contractClient.WaitForReceipt(ctx, txHash)
+	receipt, err := o.contractClient.WaitForReceipt(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("failed waiting for receipt: %w", err)
 	}
 
 	if receipt.Status == 1 {
+		txHash := "mock"
+		if tx != nil {
+			txHash = tx.Hash().Hex()
+		}
 		log.Printf("Committed round %d (tx: %s)", nextRound, txHash)
 		o.lastCommittedRound = nextRound
 	} else {

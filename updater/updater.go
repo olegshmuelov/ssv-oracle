@@ -238,7 +238,7 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 		}
 
 		// Call UpdateClusterBalance
-		txHash, err := u.contractClient.UpdateClusterBalance(
+		tx, err := u.contractClient.UpdateClusterBalance(
 			ctx,
 			round,
 			owner,
@@ -254,11 +254,28 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 		}
 
 		if u.mockMode {
-			log.Printf("  Cluster %x: effectiveBalance=%d Gwei, proof=%d siblings (mock tx: %s)",
-				leaf.ClusterID[:8], leaf.EffectiveBalance, len(proof), txHash.Hex()[:16])
+			log.Printf("  Cluster %x: effectiveBalance=%d Gwei, proof=%d siblings (mock)",
+				leaf.ClusterID[:8], leaf.EffectiveBalance, len(proof))
 		} else {
-			log.Printf("  Cluster %x: effectiveBalance=%d Gwei, tx=%s",
-				leaf.ClusterID[:8], leaf.EffectiveBalance, txHash.Hex())
+			log.Printf("  Cluster %x: effectiveBalance=%d Gwei, tx=%s (waiting for confirmation...)",
+				leaf.ClusterID[:8], leaf.EffectiveBalance, tx.Hash().Hex())
+
+			// Wait for transaction to be mined and check status
+			receipt, err := u.contractClient.WaitForReceipt(ctx, tx)
+			if err != nil {
+				log.Printf("Warning: tx %s failed to mine for cluster %x: %v",
+					tx.Hash().Hex(), leaf.ClusterID[:8], err)
+				errors++
+				continue
+			}
+			if receipt.Status != 1 {
+				log.Printf("Warning: tx %s reverted for cluster %x",
+					tx.Hash().Hex(), leaf.ClusterID[:8])
+				errors++
+				continue
+			}
+			log.Printf("  Cluster %x: tx %s confirmed in block %d",
+				leaf.ClusterID[:8], tx.Hash().Hex(), receipt.BlockNumber.Uint64())
 		}
 
 		updated++
