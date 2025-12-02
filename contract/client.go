@@ -25,6 +25,15 @@ type OracleConfig struct {
 	EpochInterval uint64
 }
 
+// Cluster represents the SSV Cluster struct as used in the contract.
+type Cluster struct {
+	ValidatorCount  uint32
+	NetworkFeeIndex uint64
+	Index           uint64
+	Active          bool
+	Balance         *big.Int
+}
+
 // Client is an Ethereum client for interacting with the Oracle contract.
 type Client struct {
 	ethClient       *ethclient.Client
@@ -271,6 +280,96 @@ func (c *Client) WaitForReceipt(ctx context.Context, txHash common.Hash) (*types
 	}
 
 	return receipt, nil
+}
+
+// UpdateClusterBalance calls the contract to update a cluster's effective balance.
+// In mock mode, logs the call instead of sending a transaction.
+func (c *Client) UpdateClusterBalance(
+	ctx context.Context,
+	owner common.Address,
+	operatorIds []uint64,
+	cluster Cluster,
+	effectiveBalance uint64,
+	proof [][32]byte,
+) (common.Hash, error) {
+	// Mock mode: log the call instead of sending real transaction
+	if c.mockMode {
+		// Hash the owner to get a unique mock tx hash per cluster
+		txHash := crypto.Keccak256Hash([]byte("mock-update"), owner.Bytes())
+		return txHash, nil
+	}
+
+	// Real mode: send actual transaction
+	privateKey, err := crypto.ToECDSA(c.privateKey)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to convert private key: %w", err)
+	}
+
+	from := crypto.PubkeyToAddress(privateKey.PublicKey)
+	nonce, err := c.ethClient.PendingNonceAt(ctx, from)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to get nonce: %w", err)
+	}
+
+	// Get EIP-1559 gas parameters
+	gasTipCap, err := c.ethClient.SuggestGasTipCap(ctx)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to get gas tip cap: %w", err)
+	}
+
+	header, err := c.ethClient.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to get latest header: %w", err)
+	}
+
+	// GasFeeCap = 2 * baseFee + gasTipCap (standard formula)
+	gasFeeCap := new(big.Int).Add(
+		new(big.Int).Mul(header.BaseFee, big.NewInt(2)),
+		gasTipCap,
+	)
+
+	// Encode function call
+	data, err := c.contractABI.Pack("updateClusterBalance", owner, operatorIds, cluster, effectiveBalance, proof)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to pack function call: %w", err)
+	}
+
+	// Estimate gas
+	gasLimit, err := c.ethClient.EstimateGas(ctx, ethereum.CallMsg{
+		From: from,
+		To:   &c.contractAddress,
+		Data: data,
+	})
+	if err != nil {
+		// Use default gas limit if estimation fails
+		gasLimit = 300000
+	}
+
+	// Create EIP-1559 transaction
+	tx := types.NewTx(&types.DynamicFeeTx{
+		ChainID:   c.chainID,
+		Nonce:     nonce,
+		GasTipCap: gasTipCap,
+		GasFeeCap: gasFeeCap,
+		Gas:       gasLimit,
+		To:        &c.contractAddress,
+		Value:     big.NewInt(0),
+		Data:      data,
+	})
+
+	// Sign transaction
+	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(c.chainID), privateKey)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	// Send transaction
+	err = c.ethClient.SendTransaction(ctx, signedTx)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	return signedTx.Hash(), nil
 }
 
 // Close closes the Ethereum client connection.

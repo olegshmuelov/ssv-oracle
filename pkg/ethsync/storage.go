@@ -35,12 +35,14 @@ type Storage interface {
 
 	// Cluster state (current metadata, updated in place)
 	UpsertClusterState(ctx context.Context, cluster *ClusterState) error
+	GetClusterState(ctx context.Context, clusterID []byte) (*ClusterState, error)
 
 	// Queries (epoch-based, slotsPerEpoch from beacon spec)
 	GetClusterBalances(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) ([]ClusterBalance, error)
 	GetActiveValidatorsWithClusters(ctx context.Context, atEpoch uint64, slotsPerEpoch uint64) ([]ActiveValidator, error)
 	GetLatestValidatorBalances(ctx context.Context, validators []ActiveValidator, beforeEpoch uint64) (map[string]uint64, error)
 	IsReadyToCommit(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) (bool, error)
+
 
 	// Transaction support
 	BeginTx(ctx context.Context) (Tx, error)
@@ -128,6 +130,14 @@ type ClusterBalance struct {
 type ActiveValidator struct {
 	ClusterID       []byte
 	ValidatorPubkey []byte
+}
+
+// OracleCommit represents a committed merkle root (from oracle_commits table).
+type OracleCommit struct {
+	RoundID        uint64
+	TargetEpoch    uint64
+	MerkleRoot     []byte
+	ReferenceBlock uint64
 }
 
 // PostgresStorage implements Storage using PostgreSQL.
@@ -225,7 +235,7 @@ func (s *PostgresStorage) SetMockLatestCommittedRound(ctx context.Context, round
 	return nil
 }
 
-// InsertOracleCommit records an oracle commit in the database.
+// InsertOracleCommit records an oracle commit in the database and notifies listeners.
 func (s *PostgresStorage) InsertOracleCommit(ctx context.Context, roundID, targetEpoch uint64, merkleRoot []byte, referenceBlock uint64, txHash []byte) error {
 	query := `
 		INSERT INTO oracle_commits (round_id, target_epoch, merkle_root, reference_block, tx_hash, tx_status, submitted_at)
@@ -243,8 +253,118 @@ func (s *PostgresStorage) InsertOracleCommit(ctx context.Context, roundID, targe
 		return fmt.Errorf("failed to insert oracle commit: %w", err)
 	}
 
+	// Notify listeners (for updater in mock mode)
+	log.Printf("Sending NOTIFY new_oracle_commit with payload: %d", roundID)
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf("NOTIFY new_oracle_commit, '%d'", roundID))
+	if err != nil {
+		// Log but don't fail - notification is best-effort
+		log.Printf("Warning: failed to send NOTIFY: %v", err)
+	} else {
+		log.Printf("NOTIFY sent successfully for round %d", roundID)
+	}
+
 	return nil
 }
+
+// ListenForCommits listens for new oracle commits via PostgreSQL NOTIFY.
+// Returns a channel that receives round IDs when new commits are inserted.
+// The caller should handle reconnection on error.
+func (s *PostgresStorage) ListenForCommits(ctx context.Context, connString string) (<-chan uint64, error) {
+	// Create a dedicated listener connection
+	listener := pq.NewListener(connString, 10*time.Second, time.Minute, func(ev pq.ListenerEventType, err error) {
+		if err != nil {
+			log.Printf("Listener event error: %v", err)
+		}
+		switch ev {
+		case pq.ListenerEventConnected:
+			log.Println("PostgreSQL listener connected")
+		case pq.ListenerEventDisconnected:
+			log.Println("PostgreSQL listener disconnected")
+		case pq.ListenerEventReconnected:
+			log.Println("PostgreSQL listener reconnected")
+		case pq.ListenerEventConnectionAttemptFailed:
+			log.Println("PostgreSQL listener connection attempt failed")
+		}
+	})
+
+	if err := listener.Listen("new_oracle_commit"); err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("failed to listen: %w", err)
+	}
+
+	log.Println("Subscribed to PostgreSQL channel: new_oracle_commit")
+
+	roundChan := make(chan uint64, 10)
+
+	go func() {
+		defer close(roundChan)
+		defer listener.Close()
+
+		// Ping periodically to keep connection alive and detect failures
+		pingTicker := time.NewTicker(30 * time.Second)
+		defer pingTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("Listener context cancelled, closing...")
+				return
+
+			case <-pingTicker.C:
+				if err := listener.Ping(); err != nil {
+					log.Printf("Listener ping failed: %v", err)
+				}
+
+			case notification := <-listener.Notify:
+				if notification == nil {
+					// Connection lost or reconnecting
+					log.Println("Received nil notification (connection issue), waiting...")
+					continue
+				}
+
+				log.Printf("Received PostgreSQL notification: channel=%s, payload=%s",
+					notification.Channel, notification.Extra)
+
+				// Parse round ID from payload
+				var roundID uint64
+				if _, err := fmt.Sscanf(notification.Extra, "%d", &roundID); err != nil {
+					log.Printf("Warning: failed to parse round ID from payload %q: %v", notification.Extra, err)
+					continue
+				}
+
+				select {
+				case roundChan <- roundID:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	return roundChan, nil
+}
+
+// GetCommitByRound returns a single oracle commit by round ID.
+func (s *PostgresStorage) GetCommitByRound(ctx context.Context, roundID uint64) (*OracleCommit, error) {
+	query := `
+		SELECT round_id, target_epoch, merkle_root, reference_block
+		FROM oracle_commits
+		WHERE round_id = $1
+		  AND tx_status = 'confirmed'
+	`
+
+	var c OracleCommit
+	err := s.db.QueryRowContext(ctx, query, roundID).Scan(&c.RoundID, &c.TargetEpoch, &c.MerkleRoot, &c.ReferenceBlock)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get commit for round %d: %w", roundID, err)
+	}
+
+	return &c, nil
+}
+
 
 // ClearAllState removes all data from the database (for fresh start).
 func (s *PostgresStorage) ClearAllState(ctx context.Context) error {
@@ -493,6 +613,53 @@ func (s *PostgresStorage) UpsertClusterState(ctx context.Context, cluster *Clust
 	}
 
 	return nil
+}
+
+// GetClusterState returns the cluster state for a given cluster ID.
+// Returns nil if cluster is not found.
+func (s *PostgresStorage) GetClusterState(ctx context.Context, clusterID []byte) (*ClusterState, error) {
+	query := `
+		SELECT cluster_id, owner_address, operator_ids,
+		       validator_count, network_fee_index, index,
+		       is_active, balance, last_updated_slot
+		FROM cluster_state
+		WHERE cluster_id = $1
+	`
+
+	var cluster ClusterState
+	var operatorIDs []int64
+	var balanceStr string
+
+	err := s.db.QueryRowContext(ctx, query, clusterID).Scan(
+		&cluster.ClusterID,
+		&cluster.OwnerAddress,
+		pq.Array(&operatorIDs),
+		&cluster.ValidatorCount,
+		&cluster.NetworkFeeIndex,
+		&cluster.Index,
+		&cluster.IsActive,
+		&balanceStr,
+		&cluster.LastUpdatedSlot,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // Not found
+		}
+		return nil, fmt.Errorf("failed to get cluster state: %w", err)
+	}
+
+	// Convert []int64 to []uint64
+	cluster.OperatorIDs = make([]uint64, len(operatorIDs))
+	for i, id := range operatorIDs {
+		cluster.OperatorIDs[i] = uint64(id)
+	}
+
+	// Parse balance from string
+	cluster.Balance = new(big.Int)
+	cluster.Balance.SetString(balanceStr, 10)
+
+	return &cluster, nil
 }
 
 // GetClusterBalances returns cluster balances for merkle tree at specific epoch.

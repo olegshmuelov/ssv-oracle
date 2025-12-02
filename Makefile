@@ -69,8 +69,11 @@ docker-down: ## Stop all oracle instances
 docker-logs: ## View logs from all oracle instances
 	@docker-compose logs -f
 
-run: build ## Build and run the oracle locally
+run-oracle: build ## Build and run the oracle locally
 	@./ssv-oracle run --config config.yaml
+
+run-updater: build ## Build and run the cluster updater locally
+	@./ssv-oracle updater --config config.yaml
 
 # PostgreSQL management
 db-up: ## Start PostgreSQL only
@@ -107,5 +110,8 @@ fresh: build ## Fresh start: reset DB and run from scratch
 	@./ssv-oracle run --config config.yaml --fresh
 
 # Quick start
-start: db-up ## Quick start: start DB and run oracle (resume from last state)
-	@$(MAKE) run
+start-oracle: db-up ## Quick start: start DB and run oracle (resume from last state)
+	@$(MAKE) run-oracle
+
+start-updater: db-up ## Quick start: start DB and run updater (resume from last state)
+	@$(MAKE) run-updater

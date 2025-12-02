@@ -27,5 +27,6 @@ func Execute() error {
 func init() {
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(updaterCmd)
 	rootCmd.AddCommand(versionCmd)
 }
