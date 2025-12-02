@@ -284,6 +284,10 @@ func (c *Client) WaitForReceipt(ctx context.Context, txHash common.Hash) (*types
 
 // UpdateClusterBalance calls the contract to update a cluster's effective balance.
 // In mock mode, logs the call instead of sending a transaction.
+//
+// NOTE: This function is NOT thread-safe. It fetches the nonce independently for each call,
+// which can cause nonce collisions if called concurrently. Callers must ensure sequential
+// execution or implement external nonce management for concurrent use.
 func (c *Client) UpdateClusterBalance(
 	ctx context.Context,
 	owner common.Address,
