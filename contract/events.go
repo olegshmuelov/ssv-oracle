@@ -43,7 +43,7 @@ func (c *Client) SubscribeRootCommitted(ctx context.Context, fromBlock uint64) (
 	}
 
 	// Subscribe to logs
-	logs := make(chan types.Log)
+	logs := make(chan types.Log, 10) // Buffer to prevent blocking during slow processing
 	sub, err := c.ethClient.SubscribeFilterLogs(ctx, query, logs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to subscribe to logs: %w", err)

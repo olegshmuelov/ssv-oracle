@@ -254,7 +254,7 @@ func (s *PostgresStorage) InsertOracleCommit(ctx context.Context, roundID, targe
 
 	// Notify listeners (for updater in mock mode)
 	log.Printf("Sending NOTIFY new_oracle_commit with payload: %d", roundID)
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf("NOTIFY new_oracle_commit, '%d'", roundID))
+	_, err = s.db.ExecContext(ctx, "SELECT pg_notify('new_oracle_commit', $1)", fmt.Sprintf("%d", roundID))
 	if err != nil {
 		// Log but don't fail - notification is best-effort
 		log.Printf("Warning: failed to send NOTIFY: %v", err)
