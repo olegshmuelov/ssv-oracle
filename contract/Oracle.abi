@@ -68,6 +68,11 @@
   {
     "inputs": [
       {
+        "internalType": "uint64",
+        "name": "round",
+        "type": "uint64"
+      },
+      {
         "internalType": "address",
         "name": "owner",
         "type": "address"

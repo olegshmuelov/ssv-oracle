@@ -240,6 +240,7 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 		// Call UpdateClusterBalance
 		txHash, err := u.contractClient.UpdateClusterBalance(
 			ctx,
+			round,
 			owner,
 			clusterState.OperatorIDs,
 			cluster,

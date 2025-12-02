@@ -290,6 +290,7 @@ func (c *Client) WaitForReceipt(ctx context.Context, txHash common.Hash) (*types
 // execution or implement external nonce management for concurrent use.
 func (c *Client) UpdateClusterBalance(
 	ctx context.Context,
+	round uint64,
 	owner common.Address,
 	operatorIds []uint64,
 	cluster Cluster,
@@ -333,7 +334,7 @@ func (c *Client) UpdateClusterBalance(
 	)
 
 	// Encode function call
-	data, err := c.contractABI.Pack("updateClusterBalance", owner, operatorIds, cluster, effectiveBalance, proof)
+	data, err := c.contractABI.Pack("updateClusterBalance", round, owner, operatorIds, cluster, effectiveBalance, proof)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("failed to pack function call: %w", err)
 	}
