@@ -21,7 +21,8 @@ type RootCommittedEvent struct {
 // SubscribeRootCommitted subscribes to RootCommitted events from the oracle contract.
 // Returns a channel that receives events and an error channel for subscription errors.
 // The caller should handle reconnection on error.
-func (c *Client) SubscribeRootCommitted(ctx context.Context, fromBlock uint64) (<-chan *RootCommittedEvent, <-chan error, error) {
+// If fromBlock is nil, subscribes to new events only (from "latest").
+func (c *Client) SubscribeRootCommitted(ctx context.Context, fromBlock *uint64) (<-chan *RootCommittedEvent, <-chan error, error) {
 	if c.mockMode {
 		return nil, nil, fmt.Errorf("SubscribeRootCommitted not available in mock mode")
 	}
@@ -39,7 +40,9 @@ func (c *Client) SubscribeRootCommitted(ctx context.Context, fromBlock uint64) (
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{c.contractAddress},
 		Topics:    [][]common.Hash{{event.ID}},
-		FromBlock: big.NewInt(int64(fromBlock)),
+	}
+	if fromBlock != nil {
+		query.FromBlock = big.NewInt(int64(*fromBlock))
 	}
 
 	// Subscribe to logs

@@ -107,10 +107,15 @@ func (u *Updater) runRealMode(ctx context.Context) error {
 	log.Println("Updater running in real mode (event subscription)")
 
 	for {
-		events, errChan, err := u.contractClient.SubscribeRootCommitted(ctx, 0)
+		// Subscribe to new events only (nil = from latest block)
+		events, errChan, err := u.contractClient.SubscribeRootCommitted(ctx, nil)
 		if err != nil {
 			log.Printf("Failed to subscribe to events: %v, retrying in 10s...", err)
-			time.Sleep(10 * time.Second)
+			select {
+			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			continue
 		}
 
@@ -148,7 +153,11 @@ func (u *Updater) runRealMode(ctx context.Context) error {
 
 		// Brief pause before reconnecting
 		log.Println("Pausing 5s before reconnecting...")
-		time.Sleep(5 * time.Second)
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
