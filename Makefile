@@ -1,4 +1,4 @@
-.PHONY: build test clean docker-build docker-up docker-down docker-logs help
+.PHONY: build test lint tools clean docker-build docker-up docker-down docker-logs help
 
 # Load .env file if it exists
 ifneq (,$(wildcard ./.env))
@@ -37,6 +37,21 @@ test-all: db-up ## Run all tests including integration (requires database)
 		docker-compose exec -T postgres psql -U oracle -d ssv_oracle -c "CREATE DATABASE ssv_oracle_test"
 	@docker-compose exec -T postgres psql -U oracle -d ssv_oracle_test -f /docker-entrypoint-initdb.d/schema.sql
 	@go test -v -tags=integration ./...
+
+lint: ## Run linters (go vet, go fmt check, golangci-lint)
+	@echo "Running linters..."
+	@go vet ./...
+	@echo "✓ go vet passed"
+	@test -z "$$(gofmt -l .)" || (echo "Files not formatted:"; gofmt -l .; exit 1)
+	@echo "✓ go fmt check passed"
+	@command -v golangci-lint >/dev/null 2>&1 || (echo "Error: golangci-lint not installed. Run: make tools"; exit 1)
+	@golangci-lint run ./...
+	@echo "✓ golangci-lint passed"
+
+tools: ## Install development tools (golangci-lint)
+	@echo "Installing development tools..."
+	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	@echo "✓ golangci-lint installed"
 
 clean: ## Clean build artifacts
 	@echo "Cleaning..."

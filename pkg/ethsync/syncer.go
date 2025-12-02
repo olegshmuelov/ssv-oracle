@@ -121,7 +121,7 @@ func (s *EventSyncer) SyncToBlock(ctx context.Context, targetBlock uint64) error
 		}
 
 		// Update progress bar
-		bar.Set(int(batchEnd - fromBlock))
+		_ = bar.Set(int(batchEnd - fromBlock))
 
 		// Advance sync progress to batch end.
 		// This is needed for batches with no events (or sparse events) to ensure
@@ -138,7 +138,7 @@ func (s *EventSyncer) SyncToBlock(ctx context.Context, targetBlock uint64) error
 		return fmt.Errorf("failed to fetch logs: %w", err)
 	}
 
-	bar.Finish()
+	_ = bar.Finish()
 	fmt.Println() // New line after progress bar
 	log.Printf("Events: synced to block %d (%d new)", targetBlock, totalEvents)
 	return nil
@@ -193,7 +193,7 @@ func (s *EventSyncer) syncOnce(ctx context.Context) error {
 		}
 
 		// Update progress bar
-		bar.Set(int(batchEnd - fromBlock))
+		_ = bar.Set(int(batchEnd - fromBlock))
 
 		// Advance sync progress to batch end.
 		// This is needed for batches with no events (or sparse events) to ensure
@@ -210,7 +210,7 @@ func (s *EventSyncer) syncOnce(ctx context.Context) error {
 		return fmt.Errorf("failed to fetch logs: %w", err)
 	}
 
-	bar.Finish()
+	_ = bar.Finish()
 	fmt.Println() // New line after progress bar
 	log.Printf("Events: synced to block %d (%d new)", finalizedBlock, totalEvents)
 	return nil
@@ -229,7 +229,7 @@ func (s *EventSyncer) processBlockLogs(ctx context.Context, blockLogs BlockLogs)
 	committed := false
 	defer func() {
 		if !committed {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 
@@ -373,14 +373,14 @@ func (s *EventSyncer) handleValidatorAdded(ctx context.Context, tx Tx, event *Va
 
 	// Upsert cluster state
 	cluster := &ClusterState{
-		ClusterID:        clusterID[:],
-		OwnerAddress:     event.Owner.Bytes(),
-		OperatorIDs:      event.OperatorIDs,
-		ValidatorCount:   event.Cluster.ValidatorCount,
-		NetworkFeeIndex:  event.Cluster.NetworkFeeIndex,
-		Index:            event.Cluster.Index,
-		IsActive:         event.Cluster.Active,
-		Balance:          event.Cluster.Balance,
+		ClusterID:       clusterID[:],
+		OwnerAddress:    event.Owner.Bytes(),
+		OperatorIDs:     event.OperatorIDs,
+		ValidatorCount:  event.Cluster.ValidatorCount,
+		NetworkFeeIndex: event.Cluster.NetworkFeeIndex,
+		Index:           event.Cluster.Index,
+		IsActive:        event.Cluster.Active,
+		Balance:         event.Cluster.Balance,
 		LastUpdatedSlot: slot, // Use slot for tracking
 	}
 
@@ -405,14 +405,14 @@ func (s *EventSyncer) handleValidatorRemoved(ctx context.Context, tx Tx, event *
 
 	// Update cluster state
 	cluster := &ClusterState{
-		ClusterID:        clusterID[:],
-		OwnerAddress:     event.Owner.Bytes(),
-		OperatorIDs:      event.OperatorIDs,
-		ValidatorCount:   event.Cluster.ValidatorCount,
-		NetworkFeeIndex:  event.Cluster.NetworkFeeIndex,
-		Index:            event.Cluster.Index,
-		IsActive:         event.Cluster.Active,
-		Balance:          event.Cluster.Balance,
+		ClusterID:       clusterID[:],
+		OwnerAddress:    event.Owner.Bytes(),
+		OperatorIDs:     event.OperatorIDs,
+		ValidatorCount:  event.Cluster.ValidatorCount,
+		NetworkFeeIndex: event.Cluster.NetworkFeeIndex,
+		Index:           event.Cluster.Index,
+		IsActive:        event.Cluster.Active,
+		Balance:         event.Cluster.Balance,
 		LastUpdatedSlot: slot,
 	}
 
@@ -436,14 +436,14 @@ func (s *EventSyncer) handleClusterLiquidated(ctx context.Context, tx Tx, event 
 
 	// Update cluster state (inactive)
 	cluster := &ClusterState{
-		ClusterID:        clusterID[:],
-		OwnerAddress:     event.Owner.Bytes(),
-		OperatorIDs:      event.OperatorIDs,
-		ValidatorCount:   event.Cluster.ValidatorCount,
-		NetworkFeeIndex:  event.Cluster.NetworkFeeIndex,
-		Index:            event.Cluster.Index,
-		IsActive:         false, // Liquidated = inactive
-		Balance:          event.Cluster.Balance,
+		ClusterID:       clusterID[:],
+		OwnerAddress:    event.Owner.Bytes(),
+		OperatorIDs:     event.OperatorIDs,
+		ValidatorCount:  event.Cluster.ValidatorCount,
+		NetworkFeeIndex: event.Cluster.NetworkFeeIndex,
+		Index:           event.Cluster.Index,
+		IsActive:        false, // Liquidated = inactive
+		Balance:         event.Cluster.Balance,
 		LastUpdatedSlot: slot,
 	}
 
@@ -467,14 +467,14 @@ func (s *EventSyncer) handleClusterReactivated(ctx context.Context, tx Tx, event
 
 	// Update cluster state (active again)
 	cluster := &ClusterState{
-		ClusterID:        clusterID[:],
-		OwnerAddress:     event.Owner.Bytes(),
-		OperatorIDs:      event.OperatorIDs,
-		ValidatorCount:   event.Cluster.ValidatorCount,
-		NetworkFeeIndex:  event.Cluster.NetworkFeeIndex,
-		Index:            event.Cluster.Index,
-		IsActive:         true, // Reactivated
-		Balance:          event.Cluster.Balance,
+		ClusterID:       clusterID[:],
+		OwnerAddress:    event.Owner.Bytes(),
+		OperatorIDs:     event.OperatorIDs,
+		ValidatorCount:  event.Cluster.ValidatorCount,
+		NetworkFeeIndex: event.Cluster.NetworkFeeIndex,
+		Index:           event.Cluster.Index,
+		IsActive:        true, // Reactivated
+		Balance:         event.Cluster.Balance,
 		LastUpdatedSlot: slot,
 	}
 
@@ -486,14 +486,14 @@ func (s *EventSyncer) handleClusterWithdrawn(ctx context.Context, tx Tx, event *
 
 	// Update cluster state with new balance (no cluster_events entry needed - just balance change)
 	cluster := &ClusterState{
-		ClusterID:        clusterID[:],
-		OwnerAddress:     event.Owner.Bytes(),
-		OperatorIDs:      event.OperatorIDs,
-		ValidatorCount:   event.Cluster.ValidatorCount,
-		NetworkFeeIndex:  event.Cluster.NetworkFeeIndex,
-		Index:            event.Cluster.Index,
-		IsActive:         event.Cluster.Active,
-		Balance:          event.Cluster.Balance,
+		ClusterID:       clusterID[:],
+		OwnerAddress:    event.Owner.Bytes(),
+		OperatorIDs:     event.OperatorIDs,
+		ValidatorCount:  event.Cluster.ValidatorCount,
+		NetworkFeeIndex: event.Cluster.NetworkFeeIndex,
+		Index:           event.Cluster.Index,
+		IsActive:        event.Cluster.Active,
+		Balance:         event.Cluster.Balance,
 		LastUpdatedSlot: slot,
 	}
 
@@ -505,14 +505,14 @@ func (s *EventSyncer) handleClusterDeposited(ctx context.Context, tx Tx, event *
 
 	// Update cluster state with new balance (no cluster_events entry needed - just balance change)
 	cluster := &ClusterState{
-		ClusterID:        clusterID[:],
-		OwnerAddress:     event.Owner.Bytes(),
-		OperatorIDs:      event.OperatorIDs,
-		ValidatorCount:   event.Cluster.ValidatorCount,
-		NetworkFeeIndex:  event.Cluster.NetworkFeeIndex,
-		Index:            event.Cluster.Index,
-		IsActive:         event.Cluster.Active,
-		Balance:          event.Cluster.Balance,
+		ClusterID:       clusterID[:],
+		OwnerAddress:    event.Owner.Bytes(),
+		OperatorIDs:     event.OperatorIDs,
+		ValidatorCount:  event.Cluster.ValidatorCount,
+		NetworkFeeIndex: event.Cluster.NetworkFeeIndex,
+		Index:           event.Cluster.Index,
+		IsActive:        event.Cluster.Active,
+		Balance:         event.Cluster.Balance,
 		LastUpdatedSlot: slot,
 	}
 

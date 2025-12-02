@@ -112,7 +112,7 @@ func (o *Oracle) processRound(ctx context.Context, syncer *ethsync.EventSyncer, 
 		return err
 	}
 
-	currentSlot := uint64(time.Now().Sub(spec.GenesisTime) / spec.SlotDuration)
+	currentSlot := uint64(time.Since(spec.GenesisTime) / spec.SlotDuration)
 	currentEpoch := currentSlot / spec.SlotsPerEpoch
 
 	log.Printf("Epoch %d finalized (current=%d, checkpoint: epoch=%d block=%d)",

@@ -11,8 +11,8 @@ import (
 // MerkleTree holds the full tree structure for proof generation.
 type MerkleTree struct {
 	Root   [32]byte
-	Leaves []Leaf        // Sorted leaves (by clusterID)
-	Layers [][][32]byte  // All tree layers [0]=leaves, [len-1]=root
+	Leaves []Leaf       // Sorted leaves (by clusterID)
+	Layers [][][32]byte // All tree layers [0]=leaves, [len-1]=root
 }
 
 // Leaf represents a single leaf in the merkle tree.

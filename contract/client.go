@@ -268,13 +268,13 @@ func (c *Client) WaitForReceipt(ctx context.Context, txHash common.Hash) (*types
 	}
 
 	// Real mode: wait for actual receipt
-	receipt, err := bind.WaitMined(ctx, c.ethClient, &types.Transaction{})
+	_, err := bind.WaitMined(ctx, c.ethClient, &types.Transaction{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to wait for transaction: %w", err)
 	}
 
 	// Get the actual receipt
-	receipt, err = c.ethClient.TransactionReceipt(ctx, txHash)
+	receipt, err := c.ethClient.TransactionReceipt(ctx, txHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get receipt: %w", err)
 	}

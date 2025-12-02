@@ -43,7 +43,6 @@ type Storage interface {
 	GetLatestValidatorBalances(ctx context.Context, validators []ActiveValidator, beforeEpoch uint64) (map[string]uint64, error)
 	IsReadyToCommit(ctx context.Context, targetEpoch uint64, slotsPerEpoch uint64) (bool, error)
 
-
 	// Transaction support
 	BeginTx(ctx context.Context) (Tx, error)
 
@@ -365,7 +364,6 @@ func (s *PostgresStorage) GetCommitByRound(ctx context.Context, roundID uint64) 
 	return &c, nil
 }
 
-
 // ClearAllState removes all data from the database (for fresh start).
 func (s *PostgresStorage) ClearAllState(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -375,7 +373,7 @@ func (s *PostgresStorage) ClearAllState(ctx context.Context) error {
 
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 
@@ -570,7 +568,6 @@ func (s *PostgresStorage) InsertValidatorBalance(ctx context.Context, balance *V
 	return nil
 }
 
-
 // UpsertClusterState inserts or updates cluster state.
 func (s *PostgresStorage) UpsertClusterState(ctx context.Context, cluster *ClusterState) error {
 	query := `
@@ -657,7 +654,9 @@ func (s *PostgresStorage) GetClusterState(ctx context.Context, clusterID []byte)
 
 	// Parse balance from string
 	cluster.Balance = new(big.Int)
-	cluster.Balance.SetString(balanceStr, 10)
+	if _, ok := cluster.Balance.SetString(balanceStr, 10); !ok {
+		return nil, fmt.Errorf("failed to parse balance string: %q", balanceStr)
+	}
 
 	return &cluster, nil
 }

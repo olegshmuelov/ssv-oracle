@@ -36,11 +36,11 @@ var (
 // Cluster represents an SSV cluster state.
 // Matches the Cluster struct from ISSVNetworkCore.sol
 type Cluster struct {
-	ValidatorCount   uint32   // The number of validators in the cluster
-	NetworkFeeIndex  uint64   // The index of network fees related to this cluster
-	Index            uint64   // The last index calculated for the cluster
-	Active           bool     // Flag indicating whether the cluster is active
-	Balance          *big.Int // The balance of the cluster (uint256)
+	ValidatorCount  uint32   // The number of validators in the cluster
+	NetworkFeeIndex uint64   // The index of network fees related to this cluster
+	Index           uint64   // The last index calculated for the cluster
+	Active          bool     // Flag indicating whether the cluster is active
+	Balance         *big.Int // The balance of the cluster (uint256)
 }
 
 // SSV Event Data Structures

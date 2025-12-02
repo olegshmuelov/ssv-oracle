@@ -65,14 +65,14 @@ func (c *Client) SubscribeRootCommitted(ctx context.Context, fromBlock uint64) (
 				}
 				return
 			case vLog := <-logs:
-				event, err := c.parseRootCommittedEvent(vLog)
+				parsedEvent, err := c.parseRootCommittedEvent(vLog)
 				if err != nil {
 					log.Printf("Warning: failed to parse RootCommitted event: %v", err)
 					continue
 				}
 
 				select {
-				case eventChan <- event:
+				case eventChan <- parsedEvent:
 				case <-ctx.Done():
 					return
 				}

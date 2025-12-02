@@ -16,11 +16,11 @@ import (
 
 // ExecutionClient wraps an Ethereum execution client for fetching logs and blocks.
 type ExecutionClient struct {
-	client      *ethclient.Client
-	rpcClient   *rpc.Client
-	batchSize   uint64
-	maxRetries  int
-	retryDelay  time.Duration
+	client     *ethclient.Client
+	rpcClient  *rpc.Client
+	batchSize  uint64
+	maxRetries int
+	retryDelay time.Duration
 }
 
 // ExecutionClientConfig holds configuration for the execution client.
