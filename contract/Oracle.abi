@@ -3,52 +3,29 @@
     "anonymous": false,
     "inputs": [
       {
-        "indexed": true,
-        "internalType": "uint64",
-        "name": "round",
-        "type": "uint64"
-      },
-      {
         "indexed": false,
         "internalType": "bytes32",
         "name": "merkleRoot",
         "type": "bytes32"
       },
       {
-        "indexed": false,
+        "indexed": true,
         "internalType": "uint64",
         "name": "blockNum",
         "type": "uint64"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "timestamp",
+        "type": "uint256"
       }
     ],
     "name": "RootCommitted",
     "type": "event"
   },
   {
-    "inputs": [],
-    "name": "getOracleTimingConfig",
-    "outputs": [
-      {
-        "internalType": "uint64",
-        "name": "startEpoch",
-        "type": "uint64"
-      },
-      {
-        "internalType": "uint64",
-        "name": "epochInterval",
-        "type": "uint64"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [
-      {
-        "internalType": "uint64",
-        "name": "round",
-        "type": "uint64"
-      },
       {
         "internalType": "bytes32",
         "name": "merkleRoot",
@@ -69,7 +46,7 @@
     "inputs": [
       {
         "internalType": "uint64",
-        "name": "round",
+        "name": "blockNum",
         "type": "uint64"
       },
       {

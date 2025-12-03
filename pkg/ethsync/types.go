@@ -136,15 +136,6 @@ type Spec struct {
 	SlotDuration  time.Duration
 }
 
-// NewSpec creates a new Spec with standard Ethereum values.
-func NewSpec(genesisTime time.Time) *Spec {
-	return &Spec{
-		GenesisTime:   genesisTime,
-		SlotsPerEpoch: 32,
-		SlotDuration:  12 * time.Second,
-	}
-}
-
 // SlotAt returns the slot number at the given time.
 func (s *Spec) SlotAt(t time.Time) uint64 {
 	if t.Before(s.GenesisTime) {
@@ -153,22 +144,13 @@ func (s *Spec) SlotAt(t time.Time) uint64 {
 	return uint64(t.Sub(s.GenesisTime) / s.SlotDuration)
 }
 
-// TimeAt returns the time at the given slot.
-func (s *Spec) TimeAt(slot uint64) time.Time {
-	return s.GenesisTime.Add(time.Duration(slot) * s.SlotDuration)
-}
-
-// EpochAt returns the epoch number at the given slot.
-func (s *Spec) EpochAt(slot uint64) uint64 {
-	return slot / s.SlotsPerEpoch
-}
-
-// FirstSlot returns the first slot of the given epoch.
-func (s *Spec) FirstSlot(epoch uint64) uint64 {
-	return epoch * s.SlotsPerEpoch
-}
-
-// LastSlot returns the last slot of the given epoch.
-func (s *Spec) LastSlot(epoch uint64) uint64 {
-	return s.FirstSlot(epoch+1) - 1
+// EpochAtTimestamp returns the epoch number for a given Unix timestamp.
+func (s *Spec) EpochAtTimestamp(timestamp uint64) uint64 {
+	t := time.Unix(int64(timestamp), 0)
+	if t.Before(s.GenesisTime) {
+		return 0
+	}
+	elapsed := t.Sub(s.GenesisTime)
+	epochDuration := s.SlotDuration * time.Duration(s.SlotsPerEpoch)
+	return uint64(elapsed / epochDuration)
 }

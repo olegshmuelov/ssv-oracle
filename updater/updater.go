@@ -9,6 +9,7 @@ import (
 
 	"ssv-oracle/contract"
 	"ssv-oracle/merkle"
+	"ssv-oracle/oracle"
 	"ssv-oracle/pkg/ethsync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -18,8 +19,8 @@ import (
 type Updater struct {
 	storage        *ethsync.PostgresStorage
 	contractClient *contract.Client
-	timingConfig   *contract.OracleConfig // For calculating targetEpoch in real mode
-	slotsPerEpoch  uint64
+	spec           *ethsync.Spec
+	timingPhases   []oracle.TimingPhase
 	mockMode       bool
 	dbConnString   string // For LISTEN/NOTIFY in mock mode
 }
@@ -28,8 +29,8 @@ type Updater struct {
 type Config struct {
 	Storage        *ethsync.PostgresStorage
 	ContractClient *contract.Client
-	TimingConfig   *contract.OracleConfig
-	SlotsPerEpoch  uint64
+	Spec           *ethsync.Spec
+	TimingPhases   []oracle.TimingPhase
 	MockMode       bool
 	DBConnString   string // Required for mock mode (LISTEN/NOTIFY)
 }
@@ -39,8 +40,8 @@ func New(cfg *Config) *Updater {
 	return &Updater{
 		storage:        cfg.Storage,
 		contractClient: cfg.ContractClient,
-		timingConfig:   cfg.TimingConfig,
-		slotsPerEpoch:  cfg.SlotsPerEpoch,
+		spec:           cfg.Spec,
+		timingPhases:   cfg.TimingPhases,
 		mockMode:       cfg.MockMode,
 		dbConnString:   cfg.DBConnString,
 	}
@@ -95,8 +96,8 @@ func (u *Updater) runMockMode(ctx context.Context) error {
 				continue
 			}
 
-			if err := u.processCommit(ctx, commit.RoundID, commit.TargetEpoch, commit.MerkleRoot); err != nil {
-				log.Printf("Error processing commit round %d: %v", roundID, err)
+			if err := u.processCommit(ctx, commit.ReferenceBlock, commit.TargetEpoch, commit.MerkleRoot); err != nil {
+				log.Printf("Error processing commit block %d: %v", commit.ReferenceBlock, err)
 			}
 		}
 	}
@@ -139,14 +140,14 @@ func (u *Updater) runRealMode(ctx context.Context) error {
 					break innerLoop
 				}
 
-				// Calculate targetEpoch from round
-				targetEpoch := u.timingConfig.StartEpoch + (event.Round * u.timingConfig.EpochInterval)
+				// Calculate targetEpoch from block timestamp
+				targetEpoch := u.calculateTargetEpoch(event.Timestamp)
 
-				log.Printf("Received RootCommitted: round=%d, targetEpoch=%d, merkleRoot=0x%x, blockNum=%d",
-					event.Round, targetEpoch, event.MerkleRoot[:8], event.BlockNum)
+				log.Printf("Received RootCommitted: blockNum=%d, timestamp=%d, targetEpoch=%d, merkleRoot=0x%x",
+					event.BlockNum, event.Timestamp, targetEpoch, event.MerkleRoot[:8])
 
-				if err := u.processCommit(ctx, event.Round, targetEpoch, event.MerkleRoot[:]); err != nil {
-					log.Printf("Error processing commit round %d: %v", event.Round, err)
+				if err := u.processCommit(ctx, event.BlockNum, targetEpoch, event.MerkleRoot[:]); err != nil {
+					log.Printf("Error processing commit block %d: %v", event.BlockNum, err)
 				}
 			}
 		}
@@ -162,20 +163,20 @@ func (u *Updater) runRealMode(ctx context.Context) error {
 }
 
 // processCommit rebuilds the merkle tree, validates root, and submits proofs.
-func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, committedRoot []byte) error {
-	log.Printf("Processing round %d (targetEpoch=%d, committedRoot=0x%x)",
-		round, targetEpoch, committedRoot[:8])
+func (u *Updater) processCommit(ctx context.Context, blockNum, targetEpoch uint64, committedRoot []byte) error {
+	log.Printf("Processing commit (blockNum=%d, targetEpoch=%d, committedRoot=0x%x)",
+		blockNum, targetEpoch, committedRoot[:8])
 
 	// 1. Query cluster balances from DB for targetEpoch
-	clusterBalances, err := u.storage.GetClusterBalances(ctx, targetEpoch, u.slotsPerEpoch)
+	clusterBalances, err := u.storage.GetClusterBalances(ctx, targetEpoch, u.spec.SlotsPerEpoch)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster balances: %w", err)
 	}
 
-	log.Printf("Round %d: found %d clusters with balances", round, len(clusterBalances))
+	log.Printf("Block %d: found %d clusters with balances", blockNum, len(clusterBalances))
 
 	if len(clusterBalances) == 0 {
-		log.Printf("Round %d: no clusters to update", round)
+		log.Printf("Block %d: no clusters to update", blockNum)
 		return nil
 	}
 
@@ -190,7 +191,7 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 	}
 
 	tree := merkle.BuildMerkleTreeWithProofs(clusterMap)
-	log.Printf("Round %d: built merkle tree with root 0x%x", round, tree.Root[:8])
+	log.Printf("Block %d: built merkle tree with root 0x%x", blockNum, tree.Root[:8])
 
 	// 3. Validate: computed root == committedRoot
 	if !bytes.Equal(tree.Root[:], committedRoot) {
@@ -198,7 +199,7 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 			tree.Root[:8], committedRoot[:8])
 	}
 
-	log.Printf("Round %d: root validated ✓, processing %d clusters", round, len(clusterBalances))
+	log.Printf("Block %d: root validated ✓, processing %d clusters", blockNum, len(clusterBalances))
 
 	// 4. For each cluster: get state, generate proof, call UpdateClusterBalance
 	updated := 0
@@ -240,7 +241,7 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 		// Call UpdateClusterBalance
 		tx, err := u.contractClient.UpdateClusterBalance(
 			ctx,
-			round,
+			blockNum,
 			owner,
 			clusterState.OperatorIDs,
 			cluster,
@@ -281,8 +282,23 @@ func (u *Updater) processCommit(ctx context.Context, round, targetEpoch uint64, 
 		updated++
 	}
 
-	log.Printf("Round %d complete: %d updated, %d skipped, %d errors",
-		round, updated, skipped, errors)
+	log.Printf("Block %d complete: %d updated, %d skipped, %d errors",
+		blockNum, updated, skipped, errors)
 
 	return nil
+}
+
+// calculateTargetEpoch derives the target epoch from a block timestamp.
+// The block was created after the oracle committed, so we find the most recent
+// targetEpoch that would have been finalized before this block.
+func (u *Updater) calculateTargetEpoch(timestamp uint64) uint64 {
+	blockEpoch := u.spec.EpochAtTimestamp(timestamp)
+
+	// Find the timing phase and calculate which targetEpoch this corresponds to
+	phase := oracle.GetTimingForEpoch(u.timingPhases, blockEpoch)
+	_, targetEpoch, ready := phase.RoundForFinalizedEpoch(blockEpoch)
+	if !ready {
+		return phase.StartEpoch
+	}
+	return targetEpoch
 }

@@ -13,9 +13,9 @@ import (
 
 // RootCommittedEvent represents a RootCommitted event from the Oracle contract.
 type RootCommittedEvent struct {
-	Round      uint64
 	MerkleRoot [32]byte
-	BlockNum   uint64
+	BlockNum   uint64 // indexed
+	Timestamp  uint64 // block.timestamp when commit was made
 }
 
 // SubscribeRootCommitted subscribes to RootCommitted events from the oracle contract.
@@ -93,15 +93,15 @@ func (c *Client) parseRootCommittedEvent(vLog types.Log) (*RootCommittedEvent, e
 		return nil, fmt.Errorf("RootCommitted event not found in ABI")
 	}
 
-	// Parse indexed parameter (round) from topics
+	// Parse indexed parameter (blockNum) from topics
 	if len(vLog.Topics) < 2 {
 		return nil, fmt.Errorf("invalid log: expected 2 topics, got %d", len(vLog.Topics))
 	}
 
-	// Topic[0] is the event signature, Topic[1] is the indexed round
-	round := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Uint64()
+	// Topic[0] is the event signature, Topic[1] is the indexed blockNum
+	blockNum := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Uint64()
 
-	// Parse non-indexed parameters from data
+	// Parse non-indexed parameters from data (merkleRoot, targetEpoch)
 	unpacked, err := event.Inputs.NonIndexed().Unpack(vLog.Data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack event data: %w", err)
@@ -117,15 +117,15 @@ func (c *Client) parseRootCommittedEvent(vLog types.Log) (*RootCommittedEvent, e
 		return nil, fmt.Errorf("merkleRoot is not [32]byte")
 	}
 
-	// blockNum is uint64
-	blockNum, ok := unpacked[1].(uint64)
+	// timestamp is *big.Int (uint256 in Solidity)
+	timestampBig, ok := unpacked[1].(*big.Int)
 	if !ok {
-		return nil, fmt.Errorf("blockNum is not uint64")
+		return nil, fmt.Errorf("timestamp is not *big.Int")
 	}
 
 	return &RootCommittedEvent{
-		Round:      round,
 		MerkleRoot: merkleRoot,
 		BlockNum:   blockNum,
+		Timestamp:  timestampBig.Uint64(),
 	}, nil
 }

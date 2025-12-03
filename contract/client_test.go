@@ -12,21 +12,20 @@ func TestOracleABI_Loaded(t *testing.T) {
 	t.Logf("Oracle ABI loaded successfully (%d bytes)", len(oracleABI))
 }
 
-func TestOracleConfig(t *testing.T) {
-	config := &OracleConfig{
-		StartEpoch:    100,
-		EpochInterval: 32,
+func TestCluster(t *testing.T) {
+	cluster := &Cluster{
+		ValidatorCount:  10,
+		NetworkFeeIndex: 100,
+		Index:           1,
+		Active:          true,
+		Balance:         nil, // Will be set dynamically
 	}
 
-	if config.StartEpoch != 100 {
-		t.Errorf("Expected StartEpoch=100, got %d", config.StartEpoch)
+	if cluster.ValidatorCount != 10 {
+		t.Errorf("Expected ValidatorCount=10, got %d", cluster.ValidatorCount)
 	}
 
-	if config.EpochInterval != 32 {
-		t.Errorf("Expected EpochInterval=32, got %d", config.EpochInterval)
-	}
-
-	t.Logf("OracleConfig: startEpoch=%d, epochInterval=%d", config.StartEpoch, config.EpochInterval)
+	t.Logf("Cluster: validatorCount=%d, active=%v", cluster.ValidatorCount, cluster.Active)
 }
 
 // Note: Full integration tests will be added when contract is deployed to testnet
@@ -34,7 +33,7 @@ func TestClient_PlaceholderForFutureTests(t *testing.T) {
 	t.Skip("Skipping until contract is deployed to testnet")
 
 	// Future tests:
-	// - TestClient_GetOracleTimingConfig
 	// - TestClient_CommitRoot
+	// - TestClient_UpdateClusterBalance
 	// - TestClient_WaitForReceipt
 }

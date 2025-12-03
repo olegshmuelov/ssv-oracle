@@ -204,36 +204,6 @@ func (s *PostgresStorage) SetChainID(ctx context.Context, chainID uint64) error 
 	return nil
 }
 
-// GetMockLatestCommittedRound returns the mock committed round (for PoC).
-func (s *PostgresStorage) GetMockLatestCommittedRound(ctx context.Context) (uint64, error) {
-	var round uint64
-	query := `SELECT mock_latest_committed_round FROM sync_progress WHERE id = 1`
-
-	err := s.db.QueryRowContext(ctx, query).Scan(&round)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get mock committed round: %w", err)
-	}
-
-	return round, nil
-}
-
-// SetMockLatestCommittedRound updates the mock committed round (for PoC).
-func (s *PostgresStorage) SetMockLatestCommittedRound(ctx context.Context, round uint64) error {
-	query := `
-		UPDATE sync_progress
-		SET mock_latest_committed_round = $1,
-		    updated_at = NOW()
-		WHERE id = 1
-	`
-
-	_, err := s.db.ExecContext(ctx, query, round)
-	if err != nil {
-		return fmt.Errorf("failed to update mock committed round: %w", err)
-	}
-
-	return nil
-}
-
 // InsertOracleCommit records an oracle commit in the database and notifies listeners.
 func (s *PostgresStorage) InsertOracleCommit(ctx context.Context, roundID, targetEpoch uint64, merkleRoot []byte, referenceBlock uint64, txHash []byte) error {
 	query := `
@@ -399,7 +369,6 @@ func (s *PostgresStorage) ClearAllState(ctx context.Context) error {
 		UPDATE sync_progress SET
 			chain_id = NULL,
 			last_synced_block = 0,
-			mock_latest_committed_round = 0,
 			updated_at = NOW()
 		WHERE id = 1
 	`)

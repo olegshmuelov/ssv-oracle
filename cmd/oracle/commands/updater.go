@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"ssv-oracle/contract"
+	"ssv-oracle/oracle"
 	"ssv-oracle/pkg/ethsync"
 	"ssv-oracle/updater"
 )
@@ -56,11 +57,7 @@ type UpdaterConfig struct {
 
 	// Oracle
 	PrivateKeyEnv string `yaml:"private_key_env"`
-
-	// Mock Mode
-	MockMode                bool   `yaml:"mock_mode"`
-	MockOracleStartEpoch    uint64 `yaml:"mock_oracle_start_epoch"`
-	MockOracleEpochInterval uint64 `yaml:"mock_oracle_epoch_interval"`
+	OracleTiming  []oracle.TimingPhase `yaml:"oracle_timing"`
 }
 
 func runUpdater(_ *cobra.Command, _ []string) error {
@@ -70,9 +67,17 @@ func runUpdater(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Enable mock mode if oracle contract is zero address
+	mockMode := cfg.OracleContract == "0x0000000000000000000000000000000000000000"
+
+	// Validate timing config
+	if err := oracle.ValidateTimingPhases(cfg.OracleTiming); err != nil {
+		log.Fatalf("Invalid timing config: %v", err)
+	}
+
 	// Get private key from environment
 	privateKey := os.Getenv(cfg.PrivateKeyEnv)
-	if privateKey == "" && !cfg.MockMode {
+	if privateKey == "" && !mockMode {
 		log.Fatalf("Private key not found in environment variable %s", cfg.PrivateKeyEnv)
 	}
 
@@ -84,13 +89,8 @@ func runUpdater(_ *cobra.Command, _ []string) error {
 
 	log.Printf("SSV Cluster Updater %s", Version)
 	log.Printf("Oracle Contract: %s", cfg.OracleContract)
-
-	// Auto-enable mock mode if oracle contract is zero address
-	if cfg.OracleContract == "0x0000000000000000000000000000000000000000" {
-		if !cfg.MockMode {
-			log.Println("Oracle contract is zero address, enabling mock mode")
-			cfg.MockMode = true
-		}
+	if mockMode {
+		log.Println("Running in mock mode (oracle contract is zero address)")
 	}
 
 	// Build connection string
@@ -124,15 +124,8 @@ func runUpdater(_ *cobra.Command, _ []string) error {
 
 	// Create contract client
 	var ethClient *contract.Client
-	var timingConfig *contract.OracleConfig
-
-	if cfg.MockMode {
-		log.Printf("Mock mode: startEpoch=%d, interval=%d", cfg.MockOracleStartEpoch, cfg.MockOracleEpochInterval)
-		ethClient = contract.NewMockClient(cfg.MockOracleStartEpoch, cfg.MockOracleEpochInterval, storage)
-		timingConfig = &contract.OracleConfig{
-			StartEpoch:    cfg.MockOracleStartEpoch,
-			EpochInterval: cfg.MockOracleEpochInterval,
-		}
+	if mockMode {
+		ethClient = contract.NewMockClient(storage)
 	} else {
 		var err error
 		ethClient, err = contract.NewClient(cfg.EthRPC, cfg.OracleContract, privateKey)
@@ -140,22 +133,15 @@ func runUpdater(_ *cobra.Command, _ []string) error {
 			log.Fatalf("Failed to create Ethereum client: %v", err)
 		}
 		defer ethClient.Close()
-
-		// Get timing config from contract
-		timingConfig, err = ethClient.GetTimingConfig(context.Background())
-		if err != nil {
-			log.Fatalf("Failed to get timing config from contract: %v", err)
-		}
-		log.Printf("Timing config: startEpoch=%d, interval=%d", timingConfig.StartEpoch, timingConfig.EpochInterval)
 	}
 
 	// Create updater
 	updaterInstance := updater.New(&updater.Config{
 		Storage:        storage,
 		ContractClient: ethClient,
-		TimingConfig:   timingConfig,
-		SlotsPerEpoch:  spec.SlotsPerEpoch,
-		MockMode:       cfg.MockMode,
+		Spec:           spec,
+		TimingPhases:   cfg.OracleTiming,
+		MockMode:       mockMode,
 		DBConnString:   connString,
 	})
 
