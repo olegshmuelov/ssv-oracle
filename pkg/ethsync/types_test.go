@@ -8,6 +8,15 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// newTestSpec creates a Spec with standard Ethereum values for testing.
+func newTestSpec(genesisTime time.Time) *Spec {
+	return &Spec{
+		GenesisTime:   genesisTime,
+		SlotsPerEpoch: 32,
+		SlotDuration:  12 * time.Second,
+	}
+}
+
 func TestComputeClusterID(t *testing.T) {
 	// Test with example data
 	owner := common.HexToAddress("0x1234567890123456789012345678901234567890")
@@ -69,7 +78,7 @@ func TestComputeClusterID_SortingInvariant(t *testing.T) {
 func TestSpec(t *testing.T) {
 	// Use Mainnet genesis time: Dec 1, 2020 12:00:23 UTC
 	genesisTime := time.Date(2020, 12, 1, 12, 0, 23, 0, time.UTC)
-	spec := NewSpec(genesisTime)
+	spec := newTestSpec(genesisTime)
 
 	t.Run("SlotAt", func(t *testing.T) {
 		// Slot 0 at genesis
@@ -97,104 +106,29 @@ func TestSpec(t *testing.T) {
 		}
 	})
 
-	t.Run("TimeAt", func(t *testing.T) {
-		// Time at slot 0 should be genesis
-		slotTime := spec.TimeAt(0)
-		if !slotTime.Equal(genesisTime) {
-			t.Errorf("Expected genesis time at slot 0, got %v", slotTime)
+	t.Run("EpochAtTimestamp", func(t *testing.T) {
+		// Epoch 0 at genesis
+		epoch := spec.EpochAtTimestamp(uint64(genesisTime.Unix()))
+		if epoch != 0 {
+			t.Errorf("Expected epoch 0 at genesis, got %d", epoch)
 		}
 
-		// Time at slot 100
-		slotTime = spec.TimeAt(100)
-		expected := genesisTime.Add(100 * 12 * time.Second)
-		if !slotTime.Equal(expected) {
-			t.Errorf("Expected %v at slot 100, got %v", expected, slotTime)
-		}
-	})
-
-	t.Run("EpochAt", func(t *testing.T) {
-		tests := []struct {
-			slot     uint64
-			expected uint64
-		}{
-			{0, 0},
-			{31, 0},
-			{32, 1},
-			{63, 1},
-			{64, 2},
-			{320, 10},
+		// Epoch 1 at genesis + 32 slots (384 seconds)
+		epoch = spec.EpochAtTimestamp(uint64(genesisTime.Add(384 * time.Second).Unix()))
+		if epoch != 1 {
+			t.Errorf("Expected epoch 1, got %d", epoch)
 		}
 
-		for _, tt := range tests {
-			epoch := spec.EpochAt(tt.slot)
-			if epoch != tt.expected {
-				t.Errorf("EpochAt(%d) = %d, expected %d", tt.slot, epoch, tt.expected)
-			}
-		}
-	})
-
-	t.Run("FirstSlot", func(t *testing.T) {
-		tests := []struct {
-			epoch    uint64
-			expected uint64
-		}{
-			{0, 0},
-			{1, 32},
-			{2, 64},
-			{10, 320},
+		// Epoch 10 at genesis + 320 slots (3840 seconds)
+		epoch = spec.EpochAtTimestamp(uint64(genesisTime.Add(3840 * time.Second).Unix()))
+		if epoch != 10 {
+			t.Errorf("Expected epoch 10, got %d", epoch)
 		}
 
-		for _, tt := range tests {
-			slot := spec.FirstSlot(tt.epoch)
-			if slot != tt.expected {
-				t.Errorf("FirstSlot(%d) = %d, expected %d", tt.epoch, slot, tt.expected)
-			}
-		}
-	})
-
-	t.Run("LastSlot", func(t *testing.T) {
-		tests := []struct {
-			epoch    uint64
-			expected uint64
-		}{
-			{0, 31},
-			{1, 63},
-			{2, 95},
-			{10, 351},
-		}
-
-		for _, tt := range tests {
-			slot := spec.LastSlot(tt.epoch)
-			if slot != tt.expected {
-				t.Errorf("LastSlot(%d) = %d, expected %d", tt.epoch, slot, tt.expected)
-			}
-		}
-	})
-
-	t.Run("RealWorldScenario", func(t *testing.T) {
-		// Simulate a real block time and verify calculations
-		// Block at slot 1000 (epoch 31)
-		blockTime := genesisTime.Add(1000 * 12 * time.Second)
-
-		slot := spec.SlotAt(blockTime)
-		if slot != 1000 {
-			t.Errorf("Expected slot 1000, got %d", slot)
-		}
-
-		epoch := spec.EpochAt(slot)
-		if epoch != 31 {
-			t.Errorf("Expected epoch 31, got %d", epoch)
-		}
-
-		// Verify first and last slot of epoch 31
-		firstSlot := spec.FirstSlot(31)
-		if firstSlot != 992 {
-			t.Errorf("Expected first slot 992, got %d", firstSlot)
-		}
-
-		lastSlot := spec.LastSlot(31)
-		if lastSlot != 1023 {
-			t.Errorf("Expected last slot 1023, got %d", lastSlot)
+		// Before genesis should return 0
+		epoch = spec.EpochAtTimestamp(uint64(genesisTime.Add(-1 * time.Hour).Unix()))
+		if epoch != 0 {
+			t.Errorf("Expected epoch 0 before genesis, got %d", epoch)
 		}
 	})
 }

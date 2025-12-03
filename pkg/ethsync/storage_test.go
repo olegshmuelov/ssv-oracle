@@ -220,14 +220,14 @@ func TestPostgresStorage_ClusterState(t *testing.T) {
 	ownerAddress := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44}
 
 	cluster := &ClusterState{
-		ClusterID:        clusterID,
-		OwnerAddress:     ownerAddress,
-		OperatorIDs:      []uint64{1, 2, 3, 4},
-		ValidatorCount:   2,
-		NetworkFeeIndex:  12345,
-		Index:            67890,
-		IsActive:         true,
-		Balance:          big.NewInt(1000000000000000000), // 1 SSV token
+		ClusterID:       clusterID,
+		OwnerAddress:    ownerAddress,
+		OperatorIDs:     []uint64{1, 2, 3, 4},
+		ValidatorCount:  2,
+		NetworkFeeIndex: 12345,
+		Index:           67890,
+		IsActive:        true,
+		Balance:         big.NewInt(1000000000000000000), // 1 SSV token
 		LastUpdatedSlot: 100,
 	}
 

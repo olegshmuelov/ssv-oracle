@@ -1,8 +1,11 @@
 package merkle
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 func TestBuildMerkleTree_Empty(t *testing.T) {
@@ -234,4 +237,213 @@ func TestBuildMerkleTree_NonPowerOfTwo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildMerkleTreeWithProofs_Structure(t *testing.T) {
+	cluster1 := [32]byte{0x11}
+	cluster2 := [32]byte{0x22}
+	cluster3 := [32]byte{0x33}
+
+	clusters := map[[32]byte]uint64{
+		cluster1: 32000000000,
+		cluster2: 31000000000,
+		cluster3: 32000000000,
+	}
+
+	tree := BuildMerkleTreeWithProofs(clusters)
+
+	// Verify tree structure
+	if tree == nil {
+		t.Fatal("Tree is nil")
+	}
+
+	// Should have 3 leaves
+	if len(tree.Leaves) != 3 {
+		t.Errorf("Expected 3 leaves, got %d", len(tree.Leaves))
+	}
+
+	// Leaves should be sorted by clusterID
+	for i := 1; i < len(tree.Leaves); i++ {
+		if tree.Leaves[i-1].ClusterID[0] > tree.Leaves[i].ClusterID[0] {
+			t.Error("Leaves are not sorted by clusterID")
+		}
+	}
+
+	// Should have multiple layers
+	if len(tree.Layers) < 2 {
+		t.Errorf("Expected at least 2 layers, got %d", len(tree.Layers))
+	}
+
+	// Layer 0 should have 3 hashes (leaves)
+	if len(tree.Layers[0]) != 3 {
+		t.Errorf("Layer 0 should have 3 hashes, got %d", len(tree.Layers[0]))
+	}
+
+	// Last layer should have 1 hash (root)
+	if len(tree.Layers[len(tree.Layers)-1]) != 1 {
+		t.Errorf("Last layer should have 1 hash (root), got %d", len(tree.Layers[len(tree.Layers)-1]))
+	}
+
+	// Root should match
+	if tree.Root != tree.Layers[len(tree.Layers)-1][0] {
+		t.Error("Root doesn't match last layer")
+	}
+
+	t.Logf("Tree with %d leaves, %d layers", len(tree.Leaves), len(tree.Layers))
+	t.Logf("Root: 0x%x", tree.Root)
+}
+
+func TestBuildMerkleTreeWithProofs_MatchesBuildMerkleTree(t *testing.T) {
+	cluster1 := [32]byte{0x11}
+	cluster2 := [32]byte{0x22}
+	cluster3 := [32]byte{0x33}
+
+	clusters := map[[32]byte]uint64{
+		cluster1: 32000000000,
+		cluster2: 31000000000,
+		cluster3: 32000000000,
+	}
+
+	// Both functions should produce the same root
+	rootSimple := BuildMerkleTree(clusters)
+	tree := BuildMerkleTreeWithProofs(clusters)
+
+	if rootSimple != tree.Root {
+		t.Error("BuildMerkleTree and BuildMerkleTreeWithProofs produce different roots")
+		t.Logf("BuildMerkleTree: 0x%x", rootSimple)
+		t.Logf("BuildMerkleTreeWithProofs: 0x%x", tree.Root)
+	}
+}
+
+func TestGetProof_VerifyProof(t *testing.T) {
+	cluster1 := [32]byte{0x11}
+	cluster2 := [32]byte{0x22}
+	cluster3 := [32]byte{0x33}
+
+	clusters := map[[32]byte]uint64{
+		cluster1: 32000000000,
+		cluster2: 31000000000,
+		cluster3: 32000000000,
+	}
+
+	tree := BuildMerkleTreeWithProofs(clusters)
+
+	// Get proof for each cluster and verify
+	for _, leaf := range tree.Leaves {
+		proof, err := tree.GetProof(leaf.ClusterID)
+		if err != nil {
+			t.Errorf("Failed to get proof for cluster %x: %v", leaf.ClusterID[:8], err)
+			continue
+		}
+
+		// Verify proof by reconstructing root
+		computedRoot := verifyProof(leaf.Hash, proof)
+		if computedRoot != tree.Root {
+			t.Errorf("Proof verification failed for cluster %x", leaf.ClusterID[:8])
+			t.Logf("Expected root: 0x%x", tree.Root)
+			t.Logf("Computed root: 0x%x", computedRoot)
+		}
+
+		t.Logf("Cluster %x: proof has %d siblings", leaf.ClusterID[:8], len(proof))
+	}
+}
+
+func TestGetProof_NotFound(t *testing.T) {
+	cluster1 := [32]byte{0x11}
+
+	clusters := map[[32]byte]uint64{
+		cluster1: 32000000000,
+	}
+
+	tree := BuildMerkleTreeWithProofs(clusters)
+
+	// Try to get proof for non-existent cluster
+	nonExistent := [32]byte{0xFF}
+	_, err := tree.GetProof(nonExistent)
+	if err == nil {
+		t.Error("Expected error for non-existent cluster")
+	}
+}
+
+func TestGetProof_SingleCluster(t *testing.T) {
+	cluster1 := [32]byte{0x11}
+
+	clusters := map[[32]byte]uint64{
+		cluster1: 32000000000,
+	}
+
+	tree := BuildMerkleTreeWithProofs(clusters)
+
+	proof, err := tree.GetProof(cluster1)
+	if err != nil {
+		t.Fatalf("Failed to get proof: %v", err)
+	}
+
+	// Single cluster tree should have 1 proof element (the duplicate)
+	t.Logf("Single cluster proof length: %d", len(proof))
+
+	// Verify proof
+	leaf := tree.Leaves[0]
+	computedRoot := verifyProof(leaf.Hash, proof)
+	if computedRoot != tree.Root {
+		t.Error("Proof verification failed for single cluster")
+		t.Logf("Expected root: 0x%x", tree.Root)
+		t.Logf("Computed root: 0x%x", computedRoot)
+	}
+}
+
+func TestGetProof_LargeTree(t *testing.T) {
+	// Test with 100 clusters
+	clusters := make(map[[32]byte]uint64)
+	for i := 0; i < 100; i++ {
+		var clusterID [32]byte
+		clusterID[0] = byte(i)
+		clusterID[1] = byte(i >> 8)
+		clusters[clusterID] = uint64(32000000000 + i*1000000000)
+	}
+
+	tree := BuildMerkleTreeWithProofs(clusters)
+
+	// Verify proof for each cluster
+	for _, leaf := range tree.Leaves {
+		proof, err := tree.GetProof(leaf.ClusterID)
+		if err != nil {
+			t.Errorf("Failed to get proof for cluster %x: %v", leaf.ClusterID[:8], err)
+			continue
+		}
+
+		computedRoot := verifyProof(leaf.Hash, proof)
+		if computedRoot != tree.Root {
+			t.Errorf("Proof verification failed for cluster %x", leaf.ClusterID[:8])
+		}
+	}
+
+	t.Logf("Verified proofs for %d clusters", len(clusters))
+	t.Logf("Tree has %d layers", len(tree.Layers))
+}
+
+// verifyProof reconstructs the root from a leaf hash and proof.
+// Uses OpenZeppelin-style sorted sibling hashing.
+func verifyProof(leafHash [32]byte, proof [][32]byte) [32]byte {
+	computedHash := leafHash
+
+	for _, sibling := range proof {
+		computedHash = hashPair(computedHash, sibling)
+	}
+
+	return computedHash
+}
+
+// hashPair hashes two nodes using OpenZeppelin sorting (smaller first).
+func hashPair(a, b [32]byte) [32]byte {
+	// OpenZeppelin-style: sort siblings before hashing
+	if bytes.Compare(a[:], b[:]) > 0 {
+		a, b = b, a
+	}
+
+	combined := make([]byte, 64)
+	copy(combined[0:32], a[:])
+	copy(combined[32:64], b[:])
+
+	return crypto.Keccak256Hash(combined)
 }

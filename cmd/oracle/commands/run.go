@@ -62,10 +62,8 @@ type Config struct {
 	// Oracle
 	PrivateKeyEnv string `yaml:"private_key_env"`
 
-	// Oracle Mock Mode (PoC - until contract is ready)
-	MockMode                bool   `yaml:"mock_mode"`
-	MockOracleStartEpoch    uint64 `yaml:"mock_oracle_start_epoch"`
-	MockOracleEpochInterval uint64 `yaml:"mock_oracle_epoch_interval"`
+	// Oracle Timing Configuration
+	OracleTiming []oracle.TimingPhase `yaml:"oracle_timing"`
 }
 
 func runOracle(_ *cobra.Command, _ []string) error {
@@ -73,6 +71,11 @@ func runOracle(_ *cobra.Command, _ []string) error {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return err
+	}
+
+	// Validate timing configuration
+	if err := oracle.ValidateTimingPhases(cfg.OracleTiming); err != nil {
+		return fmt.Errorf("invalid timing configuration: %w", err)
 	}
 
 	// Get private key from environment
@@ -91,12 +94,10 @@ func runOracle(_ *cobra.Command, _ []string) error {
 	log.Printf("SSV Contract: %s", cfg.SSVContract)
 	log.Printf("Oracle Contract: %s", cfg.OracleContract)
 
-	// Auto-enable mock mode if oracle contract is zero address
-	if cfg.OracleContract == "0x0000000000000000000000000000000000000000" {
-		if !cfg.MockMode {
-			log.Println("Oracle contract is zero address, enabling mock mode")
-			cfg.MockMode = true
-		}
+	// Enable mock mode if oracle contract is zero address
+	mockMode := cfg.OracleContract == "0x0000000000000000000000000000000000000000"
+	if mockMode {
+		log.Println("Oracle contract is zero address, running in mock mode")
 	}
 
 	// 1. Create PostgreSQL storage
@@ -186,11 +187,15 @@ func runOracle(_ *cobra.Command, _ []string) error {
 		log.Fatalf("Failed to create event syncer: %v", err)
 	}
 
+	// Log timing configuration
+	currentPhase := oracle.GetTimingForEpoch(cfg.OracleTiming, 0)
+	log.Printf("Oracle timing: %d phases configured, first phase: startEpoch=%d, interval=%d",
+		len(cfg.OracleTiming), currentPhase.StartEpoch, currentPhase.Interval)
+
 	// Create Ethereum client for oracle commits
 	var ethClient *contract.Client
-	if cfg.MockMode {
-		log.Printf("Mock mode: startEpoch=%d, interval=%d", cfg.MockOracleStartEpoch, cfg.MockOracleEpochInterval)
-		ethClient = contract.NewMockClient(cfg.MockOracleStartEpoch, cfg.MockOracleEpochInterval, storage)
+	if mockMode {
+		ethClient = contract.NewMockClient(storage)
 	} else {
 		var err error
 		ethClient, err = contract.NewClient(cfg.EthRPC, cfg.OracleContract, privateKey)
@@ -204,6 +209,7 @@ func runOracle(_ *cobra.Command, _ []string) error {
 	oracleCfg := &oracle.Config{
 		Storage:        storage,
 		ContractClient: ethClient,
+		TimingPhases:   cfg.OracleTiming,
 	}
 
 	oracleInstance := oracle.New(oracleCfg)

@@ -155,7 +155,6 @@ CREATE TABLE IF NOT EXISTS sync_progress (
     id INTEGER PRIMARY KEY DEFAULT 1,
     chain_id BIGINT,  -- Network chain ID (for validation against accidental network changes)
     last_synced_block BIGINT NOT NULL DEFAULT 0,
-    mock_latest_committed_round BIGINT NOT NULL DEFAULT 0,  -- PoC only: simulates oracle contract state. Remove for production.
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 
     CHECK (id = 1)

@@ -14,7 +14,8 @@ go test ./...           # Test
 go fmt ./...            # Format
 go vet ./...            # Lint
 make fresh              # Fresh start (clear DB)
-make start              # Resume from last state
+make start-oracle       # Start oracle (resume from last state)
+make start-updater      # Start cluster updater
 ```
 
 ## Project Structure
@@ -25,6 +26,7 @@ ssv-oracle/
 ├── contract/           # Ethereum client & contract interaction
 ├── merkle/             # Merkle tree (Bitcoin/OpenZeppelin standard)
 ├── oracle/             # Main oracle loop
+├── updater/            # Cluster balance updater
 └── pkg/ethsync/        # Event syncing & storage (PostgreSQL)
 ```
 
@@ -44,12 +46,22 @@ ssv-oracle/
 6. Build Merkle tree
 7. Commit root to contract (mock mode for PoC)
 
+### Cluster Updater (updater/)
+Listens for RootCommitted events and updates cluster balances on-chain:
+1. Listen for commits (PostgreSQL NOTIFY in mock mode, contract events in real mode)
+2. Rebuild merkle tree from stored cluster balances
+3. Validate computed root matches committed root
+4. Generate merkle proof for each cluster
+5. Call UpdateClusterBalance on contract with proof
+
 ### Merkle Tree (merkle/)
 - Leaf: `keccak256(abi.encode(clusterId, effectiveBalance))`
 - Sort leaves by clusterId (bytes comparison)
 - Duplicate last node if odd count (Bitcoin standard)
 - Sort siblings before hashing (OpenZeppelin standard)
 - Empty tree: `keccak256("")`
+- `BuildMerkleTreeWithProofs`: stores layers for proof generation
+- `GetProof`: returns sibling hashes from leaf to root
 
 ### Cluster ID (pkg/ethsync)
 ```go
