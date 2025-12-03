@@ -78,9 +78,11 @@ func NextTargetEpoch(phases []TimingPhase, finalizedEpoch uint64) uint64 {
 	// Round N is finalized when finalizedEpoch > startEpoch + N*interval
 	// So next round = floor((finalizedEpoch - startEpoch - 1) / interval) + 1
 	var nextTarget uint64
-	if finalizedEpoch <= phase.StartEpoch {
+	// Handle exact equality separately to prevent uint64 underflow in subtraction
+	if finalizedEpoch == phase.StartEpoch {
 		nextTarget = phase.StartEpoch
 	} else {
+		// Safe: finalizedEpoch > phase.StartEpoch (< case handled above)
 		maxFinalizedRound := (finalizedEpoch - phase.StartEpoch - 1) / phase.Interval
 		nextTarget = phase.TargetEpoch(maxFinalizedRound + 1)
 	}

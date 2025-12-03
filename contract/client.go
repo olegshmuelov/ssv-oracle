@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
 
@@ -152,7 +153,7 @@ func (c *Client) CommitRoot(ctx context.Context, merkleRoot [32]byte, blockNum u
 		Data: data,
 	})
 	if err != nil {
-		// Use default gas limit if estimation fails
+		log.Printf("Warning: gas estimation failed for commitRoot, using default 200000: %v", err)
 		gasLimit = 200000
 	}
 
@@ -266,7 +267,7 @@ func (c *Client) UpdateClusterBalance(
 		Data: data,
 	})
 	if err != nil {
-		// Use default gas limit if estimation fails
+		log.Printf("Warning: gas estimation failed for updateClusterBalance, using default 300000: %v", err)
 		gasLimit = 300000
 	}
 
